@@ -1,6 +1,6 @@
 {
   "name": "inject",
-  "version": "0.4.2",
+  "version": "0.4.2-1",
   "main": [
     "dist/inject-ie7.js",
     "dist/inject-ie7.min.js",
