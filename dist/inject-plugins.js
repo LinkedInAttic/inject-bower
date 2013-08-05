@@ -23,9 +23,9 @@ governing permissions and limitations under the License.
 **/
 (function () {
   var style = document.createElement('style');
+  style.type = 'text/css';
   var placed = false;
   var useCssText = (style.styleSheet) ? true : false;
-  style.type = 'text/css';
 
   function CSS(txt) {
     this.txt = txt;
@@ -34,31 +34,27 @@ governing permissions and limitations under the License.
     Inject.plugins.css.addStyles(this.txt);
   };
 
-  Inject.plugin('css',
-  // ruleset
-  {
-    useSuffix: false,
-    path: function (path) {
-      return path.replace(/^css!\s*/, '');
-    },
-    pointcuts: {
-      afterFetch: function (next, text) {
-        next(null, ['',
-          ['var cssText = decodeURIComponent("', encodeURIComponent(text), '");'].join(''),
-          'module.setExports(Inject.plugins.css.create(cssText))',
-          ''].join('\n')
-        );
-      }
-    }
-  },
-  // functions
-  {
-    create: function (text) {
+  Inject.addFetchRule(/^css\!.+$/, function(next, content, resolver, comm, options) {
+    var moduleId = options.moduleId.replace(/^css!\s*/, '');
+    var resolvedMid = resolver.module(moduleId, options.parentId);
+    var path = resolver.url(resolvedMid, options.parentUrl, true);
+
+    comm.get(resolvedMid, path, function(text) {
+      next(null, ['',
+        ['var cssText = decodeURIComponent("', encodeURIComponent(text), '");'].join(''),
+        'module.setExports(Inject.plugins.css.create(cssText))',
+        ''].join('\n')
+      );
+    });
+  });
+
+  Inject.plugins.css = {
+    create: function(text) {
       return new CSS(text);
     },
     addStyles: function (text) {
       if (useCssText) {
-        style.styleSheet.cssText = [style.styleSheet.cssText, text].join('\n');
+        style.styleSheet.cssText = [style.innerHTML, text].join('\n');
       }
       else {
         style.appendChild(document.createTextNode(text));
@@ -68,7 +64,7 @@ governing permissions and limitations under the License.
         document.getElementsByTagName('head')[0].appendChild(style);
       }
     }
-  });
+  };
 })();;/*global Inject:true */
 /*
 Inject
@@ -90,32 +86,27 @@ governing permissions and limitations under the License.
 /**
  * The text plugin enables the loading of plain text.
  * This can also serve as a template for more complex text
- * transformations such as markdown syntax (just mutate in
- * the "after" pointcut)
+ * transformations such as markdown syntax
  * @file
 **/
 (function () {
-  Inject.plugin('text',
-  // ruleset
-  {
-    useSuffix: false,
-    path: function (path) {
-      return path.replace(/^text!\s*/, '');
-    },
-    pointcuts: {
-      afterFetch: function (next, text) {
-        next(null, ['',
-          'var text = "',
-          encodeURIComponent(text),
-          '";',
-          'module.setExports(decodeURIComponent(text));',
-          ''].join('')
-        );
-      }
-    }
-  },
-  {});
-})();;/*global Inject:true */
+  Inject.addFetchRule(/^text\!.+$/, function(next, content, resolver, comm, options) {
+    var moduleId = options.moduleId.replace(/^text!\s*/, '');
+    var resolvedMid = resolver.module(moduleId, options.parentId);
+    var path = resolver.url(resolvedMid, options.parentUrl, true);
+
+    comm.get(resolvedMid, path, function(text) {
+      next(null, ['',
+        'var text = "',
+        encodeURIComponent(text),
+        '";',
+        'module.setExports(decodeURIComponent(text));',
+        ''].join('')
+      );
+    });
+  });
+})();
+;/*global Inject:true */
 /*
 Inject
 Copyright 2011 LinkedIn
@@ -140,24 +131,19 @@ governing permissions and limitations under the License.
  * @file
 **/
 (function () {
-  Inject.plugin('json',
-  // ruleset
-  {
-    useSuffix: false,
-    path: function (path) {
-      return path.replace(/^json!\s*/, '');
-    },
-    pointcuts: {
-      afterFetch: function (next, text) {
-        next(null, ['',
-          'var json = "',
-          encodeURIComponent(text),
-          '";',
-          'module.setExports(JSON.parse(decodeURIComponent(json)));',
-          ''].join('')
-        );
-      }
-    }
-  },
-  {});
+  Inject.addFetchRule(/^json\!.+$/, function(next, content, resolver, comm, options) {
+    var moduleId = options.moduleId.replace(/^json!\s*/, '');
+    var resolvedMid = resolver.module(moduleId, options.parentId);
+    var path = resolver.url(resolvedMid, options.parentUrl, true);
+
+    comm.get(resolvedMid, path, function(text) {
+      next(null, ['',
+        'var json = "',
+        encodeURIComponent(text),
+        '";',
+        'module.setExports(JSON.parse(decodeURIComponent(json)));',
+        ''].join('')
+      );
+    });
+  });
 })();

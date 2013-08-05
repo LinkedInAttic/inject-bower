@@ -1,6 +1,6 @@
+* Inject on the web: http://www.injectjs.com
 * InjectJS Mailing List: https://groups.google.com/forum/#!forum/injectjs
-* 0.4.x: [![View Summary](https://secure.travis-ci.org/linkedin/inject.png?branch=v0.4.x)](http://travis-ci.org/#!/linkedin/inject/branch_summary)
-* master: [![View Summary](https://secure.travis-ci.org/linkedin/inject.png?branch=master)](http://travis-ci.org/#!/linkedin/inject/branch_summary)
+* [![View Summary](https://secure.travis-ci.org/linkedin/inject.png?branch=master)](http://travis-ci.org/#!/linkedin/inject/branches)
 
 # Welcome
 **Inject** (Apache Software License 2.0) is a revolutionary way to manage your dependencies in a *Library Agnostic* way. Some of its major features include:
@@ -16,6 +16,8 @@ This page is designed to get you up and running with the latest version of Injec
 
 # Download Inject
 The latest version of inject is always available via the source repository at [http://www.injectjs.com/download/](http://www.injectjs.com/download/). The most recent version is usually at the top, and inside is the required JS and optional HTML files. Copy them to your own server.
+
+As of 0.4.2, you can also get Inject as a [Bower](http://bower.io) package via `bower install inject`. Our Bower repository can be found [here](https://github.com/Jakobo/inject-bower).
 
 # Adding Inject to Your Page
 This walkthrough is assuming you're using a directory called `js` which contains all of your javascript, possibly even this file. It also assumes inside of the `js` directory is a `modules` directory which will contain all of your modules. Your directory layout might look like the following:

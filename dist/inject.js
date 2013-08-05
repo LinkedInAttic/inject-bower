@@ -263,7 +263,7 @@ governing permissions and limitations under the License.
     @property {number} fileExpires Time (in seconds) for how long to preserve
       items in cache @see InjectCore.setExpires
     @property {boolean} useSuffix Specify true to append file suffix when
-      resolving an identifier to a URL.  @see RulesEngine.resolveUrl
+      resolving an identifier to a URL.  @see RulesEngine.resolveFile
     @property {object} xd Contains properties related to cross-domain requests
     @property {string|null} xd.relayFile URL to easyXDM provider document
       @see <a href="https://github.com/oyvindkinsey/easyXDM">easyXDM</a>
@@ -279,7 +279,7 @@ governing permissions and limitations under the License.
  */
 var userConfig = {
   moduleRoot: null,
-  fileExpires: 300,
+  fileExpires: 0,
   useSuffix: true,
   xd: {
     relayFile: null,
@@ -448,6 +448,7 @@ var commonJSHeader = (['',
   '  with (window) {',
   '  __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__ = __INJECT_NS__.INTERNAL.createModule("__MODULE_ID__", "__MODULE_URI__");',
   '    __INJECT_NS__.INTERNAL.execs.__FUNCTION_ID__ = function() {',
+  '      // id: __MODULE_ID__ uri: __MODULE_URI__',
   '      var module = __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__,',
   '          require = __INJECT_NS__.INTERNAL.createRequire(module.id, module.uri),',
   '          define = __INJECT_NS__.INTERNAL.createDefine(module.id, module.uri),',
@@ -2341,7 +2342,12 @@ var Communicator;
     **/
     function writeToCache(url, contents) {
       // lscache and passthrough
-      return lscache.set(url, contents, userConfig.fileExpires);
+      if (userConfig.fileExpires > 0) {
+        return lscache.set(url, contents, userConfig.fileExpires);
+      }
+      else {
+        return null;
+      }
     }
 
     /**
@@ -2354,7 +2360,12 @@ var Communicator;
     **/
     function readFromCache(url) {
       // lscache and passthrough
-      return lscache.get(url);
+      if (userConfig.fileExpires > 0) {
+        return lscache.get(url);
+      }
+      else {
+        return null;
+      }
     }
 
     /**
@@ -2386,7 +2397,7 @@ var Communicator;
           ((contents) ? contents.length : 'NaN'));
 
       // write cache
-      if (statusCode === 200) {
+      if (statusCode === 200 && ! userConfig.xd.relayFile ) {
         writeToCache(url, contents);
       }
 
@@ -2516,11 +2527,13 @@ var Communicator;
 
         debugLog('Communicator (' + url + ')', 'requesting');
 
-        var cachedResults = readFromCache(url);
-        if (cachedResults) {
-          debugLog('Communicator (' + url + ')', 'retireved from cache. length: ' + cachedResults.length);
-          callback(cachedResults);
-          return;
+        if( ! userConfig.xd.relayFile ) {
+          var cachedResults = readFromCache(url);
+          if (cachedResults) {
+            debugLog('Communicator (' + url + ')', 'retireved from cache. length: ' + cachedResults.length);
+            callback(cachedResults);
+            return;
+          }
         }
 
         debugLog('Communicator (' + url + ')', 'queued');
@@ -2991,6 +3004,29 @@ var Executor;
       },
 
       /**
+       * Get the cached version of a module ID, accounting
+       * for any possible aliases. If an alias exists,
+       * the cache is also updated
+       * @method Executor.getFromCache
+       * @param {String} idAlias - an ID or alias to get
+       * @returns {Object} module at the ID or alias
+       */
+      getFromCache: function(idAlias) {
+        // check by moduleID
+        if (this.cache[idAlias]) {
+          return this.cache[idAlias];
+        }
+
+        // check by alias (updates module ID reference)
+        var alias = RulesEngine.getOriginalName(idAlias);
+        if (alias && this.cache[alias]) {
+          this.cache[idAlias] = this.cache[alias];
+        }
+
+        return this.cache[idAlias] || null;
+      },
+
+      /**
        * Create a module if it doesn't exist, and store it locally
        * @method Executor.createModule
        * @param {string} moduleId - the module identifier
@@ -3000,7 +3036,8 @@ var Executor;
        */
       createModule: function (moduleId, path) {
         var module;
-        if (!this.cache[moduleId]) {
+
+        if (!this.getFromCache(moduleId)) {
           module = {};
           module.id = moduleId || null;
           module.uri = path || null;
@@ -3009,8 +3046,10 @@ var Executor;
           module.setExports = function (xobj) {
             var name;
             for (name in module.exports) {
-              debugLog('cannot setExports when exports have already been set. setExports skipped');
-              return;
+              if (Object.hasOwnProperty.call(module.exports, name)) {
+                debugLog('cannot setExports when exports have already been set. setExports skipped');
+                return;
+              }
             }
             switch (typeof(xobj)) {
             case 'object':
@@ -3105,7 +3144,9 @@ var Executor;
         if (this.broken[moduleId] && this.broken.hasOwnProperty(moduleId)) {
           throw new Error('module ' + moduleId + ' failed to load successfully');
         }
-        return this.cache[moduleId] || null;
+
+        // return from the cache (or its alias location)
+        return this.getFromCache(moduleId) || null;
       },
 
       /**
@@ -3226,8 +3267,8 @@ var InjectCore;
         require.run = proxy(req.run, req);
         // resolve an identifier to a URL (AMD compatibility)
         require.toUrl = function (identifier) {
-          var resolvedId = RulesEngine.resolveIdentifier(identifier, id);
-          var resolvedPath = RulesEngine.resolveUrl(resolvedId, path, true);
+          var resolvedId = RulesEngine.resolveModule(identifier, id);
+          var resolvedPath = RulesEngine.resolveFile(resolvedId, path, true);
           return resolvedPath;
         };
         return require;
@@ -3240,13 +3281,14 @@ var InjectCore;
        * @method InjectCore.createDefine
        * @param {string} id - the module identifier for relative module IDs
        * @param {string} path - the module path for relative path operations
+       * @param {boolean} disableAMD - if provided, define.amd will be false, disabling AMD detection
        * @public
        * @returns a function adhearing to the AMD define() method
        */
-      createDefine: function (id, path) {
+      createDefine: function (id, path, disableAMD) {
         var req = new RequireContext(id, path);
         var define = proxy(req.define, req);
-        define.amd = {};
+        define.amd = (disableAMD) ? false : {};
         return define;
       },
 
@@ -3517,7 +3559,7 @@ var RequireContext = Fiber.extend(function () {
         }
 
         // try to get the module a couple different ways
-        identifier = RulesEngine.resolveIdentifier(moduleIdOrList, this.getId());
+        identifier = RulesEngine.resolveModule(moduleIdOrList, this.getId());
         module = Executor.getModule(identifier);
         assignedModule = Executor.getAssignedModule(this.getId(), identifier);
 
@@ -3695,7 +3737,7 @@ var RequireContext = Fiber.extend(function () {
         // TODO: amd dependencies are resolved FIRST against their current ID
         // then against the module Root (huge deviation from CommonJS which uses
         // the filepaths)
-        tempModuleId = RulesEngine.resolveIdentifier(dependencies[i], this.getId());
+        tempModuleId = RulesEngine.resolveModule(dependencies[i], this.getId());
         resolvedDependencyList.push(tempModuleId);
         if (!Executor.isModuleCircular(tempModuleId) && !Executor.isModuleDefined(tempModuleId)) {
           remainingDependencies.push(dependencies[i]);
@@ -3794,42 +3836,21 @@ governing permissions and limitations under the License.
 var RulesEngine;
 (function () {
 
-  /**
-   * the collection of rules
-   * @private
-   * @type {Array}
-   */
-  var rules = [];
+  // this regex is used to strip leading slashes
+  var LEADING_SLASHES_REGEX = /^\/+/g;
 
   /**
-   * have the rules been added to since last sorted
+   * Return the "base" directory of a given path
+   * @method RulesEngine.basedir
    * @private
-   * @type {boolean}
+   * @param {String} dir - the directory or path to get the basedir of
    */
-  var rulesIsDirty = false;
-
-  /**
-   * sort the rules table based on their "weight" property
-   * @method RulesEngine.sortRulesTable
-   * @private
-   */
-  function sortRulesTable() {
-    rules.sort(function (a, b) {
-      return b.weight - a.weight;
-    });
-    rulesIsDirty = false;
-  }
-
-  /**
-   * convert a function to a pointcut string
-   * @method RulesEngine.functionToPointcut
-   * @param {Function} fn - the function to convert
-   * @private
-   * @returns {String} the internal body of the function
-   */
-  function functionToPointcut(fn) {
-    return fn.toString().replace(FUNCTION_BODY_REGEX, '$1');
-  }
+  var basedir = function(dir) {
+    dir = dir.split('/');
+    dir.pop();
+    dir = dir.join('/');
+    return dir;
+  };
 
   var AsStatic = Fiber.extend(function () {
     return {
@@ -3838,65 +3859,399 @@ var RulesEngine;
        * @constructs RulesEngine
        */
       init: function () {
-        this.pointcuts = {};
+        this.clearRules();
+      },
+
+      /**
+       * Clear all the rules (and thus all the caches)
+       * Used to reset the rules engine
+       * @method RulesEngine.clearRules
+       */
+      clearRules: function() {
+        this.moduleRules = [];
+        this.fileRules = [];
+        this.contentRules = [];
+        this.fetchRules = [];
+        this.aliasRules = {};
+        this.revAliasRules = {};
+        this.dirty = {
+          moduleRules: true,
+          fileRules: true,
+          contentRules: true,
+          fetchRules: true,
+          aliasRules: true,
+          revAliasRules: true
+        };
+        this.caches = {
+          moduleRules: {},
+          fileRules: {},
+          contentRules: {},
+          fetchRules: {},
+          aliasRules: {},
+          revAliasRules: {}
+        };
+
+        // deprecated
+        // deprecated legacy pointcuts from addRule
+        this.addRuleCounter = 0;
+        this.addRulePointcuts = {};
+        // end deprecated
+      },
+
+      /**
+       * Add a rule to the collection
+       * @method RulesEngine.add
+       * @private
+       * @param {String} type - the type of rule to add
+       * @param {Regex|String} matches - what does this match against
+       * @param {Function} rule - the rule to apply
+       * @param {Object} options - the options for this rule
+       */
+      add: function (type, matches, rule, options) {
+        this.dirty[type] = true;
+        options = options || {};
+        var weight = options.weight || this[type].length;
+        var last = options.last || false;
+        this[type].push({
+          matches: matches,
+          fn: (typeof rule === 'function') ? rule : function() { return rule; },
+          weight: weight,
+          last: last,
+          all: options
+        });
+      },
+
+      /**
+       * Clear a specific cache
+       * @method RulesEngine.clearCache
+       * @private
+       * @param {String} type - the type of cache to clear
+       */
+      clearCache: function(type) {
+        this.caches[type] = {};
+      },
+
+      /**
+       * Sort a collection of rules by weight
+       * @method RulesEngine.sort
+       * @private
+       * @param {String} type - the type of rules to sort
+       */
+      sort: function (type) {
+        if (!this.dirty[type]) {
+          return;
+        }
+        this.clearCache(type);
+        this[type].sort(function (a, b) {
+          return b.weight - a.weight;
+        });
+        this.dirty[type] = false;
+      },
+
+      /**
+       * Get the deprecated pointcuts. This method exists
+       * while the addRule structure is deprecated
+       * @deprecated
+       * @method RulesEngine.getDeprecatedPointcuts
+       * @param {String} moduleId - the module id to get pointcuts for
+       * @returns {Array}
+       */
+      getDeprecatedPointcuts: function(moduleId) {
+        return this.addRulePointcuts[moduleId] || [];
+      },
+
+      /**
+       * Add a rule to the database. It can be called as:<br>
+       * addRule(regexMatch, weight, ruleSet)<br>
+       * addRule(regexMatch, ruleSet)<br>
+       * addRule(ruleSet)<br>
+       * The ruleSet object to apply contains a set of options.
+       * <ul>
+       * <li>ruleSet.matches: replaces regexMatch if found</li>
+       * <li>ruleSet.weight: replaces weight if found</li>
+       * <li>ruleSet.last: if true, no further rules are ran</li>
+       * <li>ruleSet.path: a path to use instead of a derived path<br>
+       *  you can also set ruleSet.path to a function, and that function will
+       *  passed the current path for mutation</li>
+       * <li>ruleSet.pointcuts.afterFetch: a function to mutate the file after retrieval, but before analysis</li>
+       * </ul>
+       * @method RulesEngine.addRule
+       * @param {RegExp|String} matches - a stirng or regex to match on
+       * @param {int} weight - a weight for the rule. Larger values run later
+       * @param {Object} rule - an object containing the rules to apply
+       * @public
+       * @deprecated
+       */
+      addRule: function (matches, weight, rule) {
+        if (!rule) {
+          rule = weight;
+          weight = null;
+        }
+        if (!rule) {
+          rule = {};
+        }
+        if (typeof rule === 'string') {
+          rule = {
+            path: rule
+          };
+        }
+        if (!rule.weight) {
+          rule.weight = this.addRuleCounter++;
+        }
+
+        if (rule.path) {
+          this.addFileRule(matches, rule.path, {
+            weight: rule.weight,
+            last: rule.last,
+            useSuffix: rule.useSuffix,
+            afterFetch: (rule.pointcuts && rule.pointcuts.afterFetch) ? rule.pointcuts.afterFetch : null
+          });
+        }
+        else if (rule.pointcuts && rule.pointcuts.afterFetch) {
+          this.addContentRule(matches, rule.pointcuts.afterFetch, {
+            weight: rule.weight
+          });
+        }
+      },
+
+      /**
+       * Add a module ID rule to the system
+       * A module rule can convert one module ID to another. This is
+       * useful for maintaining module ID's even when you move modules
+       * around in a backwards incompatible way
+       * @method RulesEngine.addModuleRule
+       * @param {String|Regex} matchesId - if the module matches this pattern, then rule will be used
+       * @param {String|Function} rule - a string or function that describes how to transform the module id
+       * @param {Object} options - the additional options for this rule such as "last" (last rule to run), "weight" (change the ordering)
+       */
+      addModuleRule: function (matchesId, rule, options) {
+        return this.add('moduleRules', matchesId, rule, options);
+      },
+
+      /**
+       * Add a file path rule to the system
+       * A file rule can convert one file path to another. This is useful
+       * for redirecting one link to another. For example, a base path of "jquery"
+       * can be redirected to a specific jQuery version.
+       * @method RulesEngine.addFileRule
+       * @param {String|Regex} matchesPath - if the path matches this pattern, then rule will be used
+       * @param {String|Function} rule - a string or function that describes how to transform the path
+       * @param {Object} options - the additional options for this rule such as "last" (last rule to run), "weight" (change the ordering)
+       */
+      addFileRule: function (matchesPath, rule, options) {
+        return this.add('fileRules', matchesPath, rule, options);
+      },
+
+      /**
+       * Add a content transformation rule
+       * Content transformations allow you to change the file's contents itself,
+       * without altering the original file. This allows you to do things like
+       * <ul>
+       *   <li>Shim "jQuery" and store it in module.exports</li>
+       *   <li>Download a non-js file and convert it to a JS object (like our plugins)</li>
+       *   <li>Replace the file with an altered version</li>
+       * </ul>
+       * @method RulesEngine.addFileRule
+       * @param {String|Regex} matchesPath - if the path matches this pattern, then rule will be used
+       * @param {RulesEngine~contentRuleCallback} rule - a function that describes how to transform the content
+       * @param {Object} options - the additional options for this rule
+       */
+      /**
+       * The content rule function allows you to asychronously change a file
+       * @callback RulesEngine~contentRuleCallback
+       * @param {Function} next - a function to call on completion, takes "error" and "result"
+       * @param {String} content - the current content
+       */
+      addContentRule: function (matchesPath, rule, options) {
+        return this.add('contentRules', matchesPath, rule, options);
+      },
+
+      /**
+       * Add a path retrieval rule
+       * Path retrieval rules allow us to change how we get our content. This allows
+       * specific modules to bypass the default communicator fetch process.
+       * @method RulesEngine.addFetchRule
+       * @param {String|Regex} matchesId - if the id matches this pattern, then rule will be used
+       * @param {RulesEngine~fetchRuleCallback} rule - a function that describes how to transform the path
+       * @param {Object} options - the additional options for this rule
+       */
+      /**
+       * The fetch rule function allows you to asychronously download the file
+       * @callback RulesEngine~fetchRuleCallback
+       * @param {Function} next - a function to call on completion, takes "error" and "result"
+       * @param {String} content - the current content
+       * @param {Object} resolver - a resolver with two methods: module() for module resolution, and url()
+       * @param {Communicator} communicator - a partial Communicator object, with a get() function
+       * @param {Object} options - additional options such as a parent reference
+       */
+      addFetchRule: function (matchesId, rule, options) {
+        return this.add('fetchRules', matchesId, rule, options);
+      },
+
+      /**
+       * Add a package alias. Useful for installing a module into a global location
+       * Packages are stored as "originalName": [aliases]
+       * and "alias": "originalName".
+       * @method RulesEngine.addPackage
+       * @param {String} resolvedId - the resolved ID to match against
+       * @param {String} alsoKnownAs - the alternate ID for this matching string
+       */
+       // jquery-1.7 aka jquery
+      addPackage: function (resolvedId, alsoKnownAs) {
+        this.dirty.aliasRules = true;
+        if (this.revAliasRules[resolvedId]) {
+          throw new Error('An alias can only map back to 1 origin');
+        }
+        if (!this.aliasRules[resolvedId]) {
+          this.aliasRules[resolvedId] = [];
+        }
+
+        this.aliasRules[resolvedId].push(alsoKnownAs);
+        this.revAliasRules[alsoKnownAs] = resolvedId;
       },
 
       /**
        * Resolve an identifier after applying all rules
-       * @method RulesEngine.resolveIdentifier
-       * @param {String} identifier - the identifier to resolve
+       * @method RulesEngine.resolveModule
+       * @param {String} moduleId - the identifier to resolve
        * @param {String} relativeTo - a base path for relative identifiers
        * @public
        * @returns {String} the resolved identifier
        */
-      resolveIdentifier: function (identifier, relativeTo) {
-        if (!relativeTo) {
-          relativeTo = '';
+      resolveModule: function (moduleId, relativeTo) {
+        // if (!this.dirty.moduleRules && this.caches.moduleRules[moduleId]) {
+        //   return this.caches.moduleRules[moduleId];
+        // }
+
+        this.sort('moduleRules');
+        var lastId = moduleId;
+        var i = 0;
+        var rules = this.moduleRules;
+        var len = rules.length;
+        var isMatch = false;
+        var matches;
+        var fn;
+        for (i; i < len; i++) {
+          matches = rules[i].matches;
+          fn = rules[i].fn;
+
+          isMatch = false;
+          if (typeof matches === 'string') {
+            if (matches === moduleId) {
+              isMatch = true;
+            }
+          }
+          else if (typeof matches.test === 'function') {
+            isMatch = matches.test(moduleId);
+          }
+
+          if (isMatch) {
+            lastId = fn(lastId);
+            if (matches.last) {
+              break;
+            }
+          }
         }
 
-        if (identifier.indexOf('.') !== 0) {
-          relativeTo = '';
+        // shear off all leading slashes
+        lastId = lastId.replace(LEADING_SLASHES_REGEX, '');
+
+        // we don't need/want relativeTo if there's no leading .
+        if (lastId.indexOf('.') !== 0) {
+          relativeTo = null;
         }
 
-        // basedir
+        // adjust relativeTo to a basedir if provided
         if (relativeTo) {
-          relativeTo = relativeTo.split('/');
-          relativeTo.pop();
-          relativeTo = relativeTo.join('/');
+          relativeTo = basedir(relativeTo);
         }
 
-        if (identifier.indexOf('/') === 0) {
-          return identifier;
-        }
+        // compute the relative path
+        lastId = this.getRelative(lastId, relativeTo);
 
-        identifier = this.computeRelativePath(identifier, relativeTo);
+        // strip leading / as it is not needed
+        lastId = lastId.replace(LEADING_SLASHES_REGEX, '');
 
-        if (identifier.indexOf('/') === 0) {
-          identifier = identifier.split('/');
-          identifier.shift();
-          identifier = identifier.join('/');
-        }
-
-        return identifier;
+        // cache and return
+        this.caches.moduleRules[moduleId] = lastId;
+        return lastId;
       },
 
       /**
        * resolve a URL relative to a base path
-       * @method RulesEngine.resolveUrl
+       * @method RulesEngine.resolveFile
        * @param {String} path - the path to resolve
        * @param {String} relativeTo - a base path for relative URLs
        * @param {Boolean} noSuffix - do not use a suffix for this resolution
        * @public
        * @returns {String} a resolved URL
        */
-      resolveUrl: function (path, relativeTo, noSuffix) {
-        var resolvedUrl;
+      resolveFile: function (path, relativeTo, noSuffix) {
+        // if (!this.dirty.fileRules && this.caches.fileRules[path]) {
+        //   return this.caches.fileRules[path];
+        // }
+
+        this.sort('fileRules');
+        var lastPath = path;
+        var i = 0;
+        var rules = this.fileRules;
+        var len = rules.length;
+        var isMatch = false;
+        var matches;
+        var fn;
+
+        // deprecated
+        var deprecatedPointcuts = [];
+        // end deprecated
+
+        for (i; i < len; i++) {
+          matches = rules[i].matches;
+          fn = rules[i].fn;
+
+          isMatch = false;
+          if (typeof matches === 'string') {
+            if (matches === path) {
+              isMatch = true;
+            }
+          }
+          else if (typeof matches.test === 'function') {
+            isMatch = matches.test(path);
+          }
+
+          if (isMatch) {
+            lastPath = fn(lastPath);
+
+            // deprecated
+            if (rules[i].all && rules[i].all.afterFetch) {
+              deprecatedPointcuts.push(rules[i].all.afterFetch);
+            }
+            // end deprecated
+
+            if (rules[i].last) {
+              break;
+            }
+          }
+        }
 
         // if no module root, freak out
         if (!userConfig.moduleRoot) {
           throw new Error('module root needs to be defined for resolving URLs');
         }
 
+        if (!lastPath) {
+          // store deprecated pointcuts
+          // deprecated
+          this.addRulePointcuts[lastPath] = deprecatedPointcuts;
+          // end deprecated
+
+          // store and return
+          this.caches.fileRules[path] = lastPath;
+          return lastPath;
+        }
+
+        // if there is no basedir function from the user, we need to slice off the last segment of relativeTo
+        // otherwise, we can use the baseDir() function
+        // otherwise (no relativeTo) it is relative to the moduleRoot
         if (relativeTo && !userConfig.baseDir) {
           relativeTo = relativeTo.replace(PROTOCOL_REGEX, PROTOCOL_EXPANDED_STRING).split('/');
           if (relativeTo[relativeTo.length - 1] && relativeTo.length !== 1) {
@@ -3913,63 +4268,188 @@ var RulesEngine;
         }
 
         // exit early on resolved http URL
-        if (ABSOLUTE_PATH_REGEX.test(path)) {
-          return path;
-        }
-
-        // Apply our rules to the path in progress
-        var result = this.applyRules(path);
-        path = result.resolved;
-
-        // exit early on resolved http URL
-        if (ABSOLUTE_PATH_REGEX.test(path)) {
-          // store pointcuts based on the resolved URL
-          this.pointcuts[path] = result.pointcuts;
-          return path;
-        }
-
-        if (!path.length) {
-          this.pointcuts.__INJECT_no_path = result.pointcuts;
-          return '';
+        if (ABSOLUTE_PATH_REGEX.test(lastPath)) {
+          this.caches.fileRules[path] = lastPath;
+          return lastPath;
         }
 
         // take off the :// to replace later
         relativeTo = relativeTo.replace(PROTOCOL_REGEX, PROTOCOL_EXPANDED_STRING);
-        path = path.replace(PROTOCOL_REGEX, PROTOCOL_EXPANDED_STRING);
+        lastPath = lastPath.replace(PROTOCOL_REGEX, PROTOCOL_EXPANDED_STRING);
 
         // #169: query strings in base
         if (/\?/.test(relativeTo)) {
-          resolvedUrl = relativeTo + path;
+          lastPath = relativeTo + lastPath;
         }
         else {
-          resolvedUrl = this.computeRelativePath(path, relativeTo);
+          lastPath = this.getRelative(lastPath, relativeTo);
         }
 
-        resolvedUrl = resolvedUrl.replace(PROTOCOL_EXPANDED_REGEX, PROTOCOL_STRING);
+        // restore the ://
+        lastPath = lastPath.replace(PROTOCOL_EXPANDED_REGEX, PROTOCOL_STRING);
 
-        // for everyone else...
-        if (!noSuffix && result.useSuffix && userConfig.useSuffix && !FILE_SUFFIX_REGEX.test(resolvedUrl)) {
-          resolvedUrl = resolvedUrl + BASIC_FILE_SUFFIX;
+        // add a suffix if required
+        if (!noSuffix && userConfig.useSuffix && !FILE_SUFFIX_REGEX.test(lastPath)) {
+          lastPath = lastPath + BASIC_FILE_SUFFIX;
         }
 
-        // store pointcuts based on the resolved URL
-        this.pointcuts[resolvedUrl] = result.pointcuts;
+        // store deprecated pointcuts
+        // deprecated
+        this.addRulePointcuts[lastPath] = deprecatedPointcuts;
+        // end deprecated
 
-        return resolvedUrl;
+        // store and return
+        this.caches.fileRules[path] = lastPath;
+        return lastPath;
+      },
+
+      /**
+       * Get the alternate names for a package
+       * Packages are stored as "originalName": [aliases]
+       * and "alias": "originalName".
+       * @method RulesEngine.getAliases
+       * @param {String} id - The resolved or Alias ID to look up
+       * @returns {Array} all other known names
+       * @public
+       */
+      getAliases: function (id) {
+        return this.aliasRules[id] || [];
+      },
+
+      /**
+       * Get the alternate names for a package
+       * Packages are stored as "originalName": [aliases]
+       * and "alias": "originalName".
+       * @method RulesEngine.getOriginalName
+       * @param {String} id - The resolved or Alias ID to look up
+       * @returns {String} a matching alias if found
+       * @public
+       */
+      getOriginalName: function (alias) {
+        return this.revAliasRules[alias] || null;
+      },
+
+      /**
+       * Get the fetch rules for a given moduleId
+       * @method RulesEngine.getFetchRules
+       * @param {String} moduleId - The module ID to retrieve fetch rules for
+       * @public
+       * @returns {Array} A collection of fetch rules for this module ID
+       */
+      getFetchRules: function (moduleId) {
+        // if (!this.dirty.fetchRules && this.caches.fetchRules[moduleId]) {
+        //   return this.caches.fetchRules[moduleId];
+        // }
+        this.sort('fetchRules');
+
+        var i = 0;
+        var rules = this.fetchRules;
+        var len = rules.length;
+        var isMatch = false;
+        var matches;
+        var fn;
+        var matchingRules = [];
+        for (i; i < len; i++) {
+          matches = rules[i].matches;
+          fn = rules[i].fn;
+
+          isMatch = false;
+          if (typeof matches === 'string') {
+            if (matches === moduleId) {
+              isMatch = true;
+            }
+          }
+          else if (typeof matches.test === 'function') {
+            isMatch = matches.test(moduleId);
+          }
+
+          if (isMatch) {
+            matchingRules.push(fn);
+          }
+        }
+
+        this.caches.contentRules[moduleId] = matchingRules;
+        return matchingRules;
+      },
+
+      /**
+       * Get the content rules for a given path
+       * @method RulesEngine.getContentRules
+       * @param {String} path - The path to retrieve content rules for
+       * @public
+       * @returns {Array} A collection of content rules for this path
+       */
+      getContentRules: function (path) {
+        // if (!this.dirty.contentRules && this.caches.contentRules[path]) {
+        //   return this.caches.contentRules[path];
+        // }
+        this.sort('contentRules');
+
+        var i = 0;
+        var rules = this.contentRules;
+        var len = rules.length;
+        var isMatch = false;
+        var matches;
+        var fn;
+        var matchingRules = [];
+        var found = false;
+
+        // deprecated
+        var deprecatedPointcuts = this.addRulePointcuts[path] || [];
+        // end deprecated
+
+        for (i; i < len; i++) {
+          matches = rules[i].matches;
+          fn = rules[i].fn;
+
+          isMatch = false;
+          if (typeof matches === 'string') {
+            if (matches === path) {
+              isMatch = true;
+            }
+          }
+          else if (typeof matches.test === 'function') {
+            isMatch = matches.test(path);
+          }
+
+          if (isMatch) {
+            matchingRules.push(fn);
+          }
+        }
+
+        // add any matching deprecated pointcuts
+        // deprecated
+        each(deprecatedPointcuts, function (depPC) {
+          found = false;
+          each(matchingRules, function (normalPC) {
+            if (normalPC === depPC) {
+              found = true;
+            }
+          });
+          if (!found) {
+            matchingRules.push(depPC);
+          }
+        });
+        // end deprecated
+
+        this.caches.contentRules[path] = matchingRules;
+        return matchingRules;
       },
 
       /**
        * Dismantles and reassembles a relative path by exploding on slashes
-       * @method RulesEngine.computeRelativePath
+       * @method RulesEngine.getRelative
        * @param {String} id - the initial identifier
        * @param {String} base - the base path for relative declarations
        * @private
        * @returns {String} a resolved path with no relative references
        */
-      computeRelativePath: function (id, base) {
+      getRelative: function (id, base) {
         var blownApartURL;
         var resolved = [];
         var piece;
+
+        base = base || '';
 
         // exit early on resolved :// in a URL
         if (ABSOLUTE_PATH_REGEX.test(id)) {
@@ -3999,213 +4479,6 @@ var RulesEngine;
 
         resolved = resolved.join('/');
         return resolved;
-      },
-
-      /**
-       * Get the pointcuts associated with a given URL path
-       * @method RulesEngine.getPointcuts
-       * @param {String} path - the url path to get pointcuts for
-       * @param {Boolean} asString - if TRUE, return the pointcuts bodies as a string
-       * @public
-       * @returns {Object} an object containing all pointcuts for the URL
-       */
-      getPointcuts: function (path, asString) {
-        // allow lookup for empty path
-        path = path || '__INJECT_no_path';
-        var pointcuts = this.pointcuts[path] || {before: [], after: []};
-        var result = {};
-        var pointcut;
-        var type;
-
-        if (typeof(asString) === 'undefined') {
-          return pointcuts;
-        }
-
-        for (type in pointcuts) {
-          if (pointcuts.hasOwnProperty(type)) {
-            for (var i = 0, len = pointcuts[type].length; i < len; i++) {
-              pointcut = pointcuts[type][i];
-              if (!result[type]) {
-                result[type] = [];
-              }
-              result[type].push(functionToPointcut(pointcut));
-            }
-          }
-        }
-
-        for (type in result) {
-          if (result.hasOwnProperty(type)) {
-            result[type] = result[type].join('\n');
-          }
-        }
-
-        return result;
-
-      },
-
-      clearRules: function () {
-        rules = [];
-        rulesIsDirty = false;
-      },
-
-      /**
-       * Add a rule to the database. It can be called as:<br>
-       * addRule(regexMatch, weight, ruleSet)<br>
-       * addRule(regexMatch, ruleSet)<br>
-       * addRule(ruleSet)<br>
-       * The ruleSet object to apply contains a set of options.
-       * <ul>
-       * <li>ruleSet.matches: replaces regexMatch if found</li>
-       * <li>ruleSet.weight: replaces weight if found</li>
-       * <li>ruleSet.last: if true, no further rules are ran</li>
-       * <li>ruleSet.path: a path to use instead of a derived path<br>
-       *  you can also set ruleSet.path to a function, and that function will
-       *  passed the current path for mutation</li>
-       * <li>ruleSet.pointcuts.afterFetch: a function to mutate the file after retrieval, but before analysis</li>
-       * <li>ruleSet.pointcuts.before (deprecated): a function to run before executing this module</li>
-       * <li>ruleSet.pointcuts.after (deprecated): a function to run after executing this module</li>
-       * </ul>
-       * @method RulesEngine.addRule
-       * @param {RegExp|String} regexMatch - a stirng or regex to match on
-       * @param {int} weight - a weight for the rule. Larger values run later
-       * @param {Object} ruleSet - an object containing the rules to apply
-       * @public
-       */
-      addRule: function (regexMatch, weight, ruleSet) {
-        // regexMatch, ruleSet
-        // regexMatch, weight, ruleSet
-        if (typeof(ruleSet) === 'undefined') {
-          if (typeof(weight) === 'undefined') {
-            // one param
-            ruleSet = regexMatch;
-            weight = null;
-            regexMatch = null;
-          }
-
-          // two params
-          ruleSet = weight;
-          weight = null;
-        }
-
-        // if weight was not set, create it
-        if (!weight) {
-          weight = rules.length;
-        }
-
-        if (typeof(ruleSet) === 'string') {
-          ruleSet = {
-            path: ruleSet
-          };
-        }
-
-        if (!ruleSet.pointcuts) {
-          ruleSet.pointcuts = {};
-        }
-
-        if (ruleSet.pointcuts.before || ruleSet.pointcuts.after) {
-          debugLog('RulesEngine', 'deprecated pointcuts in rule for ' + regexMatch.toString());
-        }
-
-        rulesIsDirty = true;
-        rules.push({
-          matches: ruleSet.matches || regexMatch,
-          weight: ruleSet.weight || weight,
-          useSuffix: (ruleSet.useSuffix === false) ? false : true,
-          last: ruleSet.last || false,
-          path: ruleSet.path,
-          pointcuts: ruleSet.pointcuts || {}
-        });
-
-      },
-
-      /**
-       * a shortcut method for multiple addRule calls
-       * @method RulesEngine.manifest
-       * @param {Object} manifestObj - a "matchString":ruleSet object
-       * @public
-       * @see RulesEngine.addRule
-       */
-      manifest: function (manifestObj) {
-        var key;
-        var rule;
-
-        for (key in manifestObj) {
-          rule = manifestObj[key];
-          // update the key to a "matches" if included in manifest
-          if (rule.matches) {
-            key = rule.matches;
-          }
-          this.addRule(key, rule);
-        }
-      },
-
-      /**
-       * Apply a set of rules to a given path
-       * @method RulesEngine.applyRules
-       * @param {String} path - the path to apply rules to
-       * @private
-       * @returns {Object} an object containing the resolved path and pointcuts
-       */
-      applyRules: function (path) {
-        if (rulesIsDirty) {
-          sortRulesTable();
-        }
-
-        var result = path;
-        var payload;
-        var allPointcuts = {};
-        var useSuffix = true;
-        var done = false;
-        each(rules, function (rule) {
-          if (done) {
-            return;
-          }
-
-          var match = false;
-          // rule matching
-          if (typeof(rule.matches) === 'string' && rule.matches === result) {
-            match = true;
-          }
-          else if (rule.matches instanceof RegExp && rule.matches.test(result)) {
-            match = true;
-          }
-          // if we have a match, do a replace
-          if (match) {
-            if (typeof(rule.path) === 'string') {
-              result = rule.path;
-            }
-            else if (typeof(rule.path) === 'function') {
-              result = rule.path(result);
-            }
-
-            if (rule.useSuffix === false) {
-              useSuffix = false;
-            }
-
-            for (var type in rule.pointcuts) {
-              if (rule.pointcuts.hasOwnProperty(type)) {
-                if (!allPointcuts[type]) {
-                  allPointcuts[type] = [];
-                }
-                allPointcuts[type].push(rule.pointcuts[type]);
-              }
-            }
-
-            if (rule.last) {
-              done = true;
-            }
-          }
-
-        });
-
-        payload = {
-          resolved: result || '',
-          useSuffix: useSuffix,
-          pointcuts: allPointcuts
-        };
-
-        return payload;
-
       }
     };
   });
@@ -4350,10 +4623,10 @@ var TreeDownloader = Fiber.extend(function () {
       var getFunction = null;
 
       // get the path and REAL identifier for this module (resolve relative references)
-      var identifier = RulesEngine.resolveIdentifier(node.getValue().name, parentName);
+      var identifier = RulesEngine.resolveModule(node.getValue().name, parentName);
 
       // modules are relative to identifiers, not to URLs
-      node.getValue().path = RulesEngine.resolveUrl(identifier);
+      node.getValue().path = RulesEngine.resolveFile(identifier);
 
       node.getValue().resolvedId = identifier;
 
@@ -4369,9 +4642,54 @@ var TreeDownloader = Fiber.extend(function () {
         return;
       }
 
-      this.log('requesting file', node.getValue().path);
-      getFunction = (node.getValue().path) ? Communicator.get : Communicator.noop;
-      getFunction(node.getValue().name, node.getValue().path, proxy(function (contents) {
+      var commParentName = (node.getParent()) ? node.getParent().getValue().name : '';
+      var parentUrl = (node.getParent()) ? node.getParent().getValue().path : '';
+      var fetchRules = RulesEngine.getFetchRules(identifier);
+      var communicatorFn = Communicator.noop;
+      var commFlow = new Flow();
+      var commFlowResolver = {
+        module: function() {
+          return RulesEngine.resolveModule.apply(RulesEngine, arguments);
+        },
+        url: function() {
+          return RulesEngine.resolveFile.apply(RulesEngine, arguments);
+        }
+      };
+      var commFlowCommunicator = {
+        get: function() {
+          return Communicator.get.apply(Communicator, arguments);
+        }
+      };
+      var addToCommFlow = function(fn) {
+        // (next, content, moduleId, resolver, options)
+        commFlow.seq(function (next, error, contents) {
+          fn(next, contents, commFlowResolver, commFlowCommunicator, {
+            moduleId: node.getValue().name,
+            parentId: commParentName,
+            parentUrl: parentUrl
+          });
+        });
+      };
+      if (fetchRules.length > 0) {
+        // build an async flow chaining fetch calls together
+        communicatorFn = function(name, path, cb) {
+          commFlow.seq(function(next) {
+            next(null, '');
+          });
+          for (var i = 0, len = fetchRules.length; i < len; i++) {
+            addToCommFlow(fetchRules[i]);
+          }
+          commFlow.seq(function (next, error, contents) {
+            cb(contents);
+          });
+        };
+      }
+      else if (node.getValue().path) {
+        communicatorFn = Communicator.get;
+      }
+
+      this.log('requesting file', node.getValue().name + ' @ ' + node.getValue().path);
+      communicatorFn(node.getValue().name, node.getValue().path, proxy(function (downloadedContent) {
         this.log('download complete', node.getValue().path);
 
         /*
@@ -4382,29 +4700,20 @@ var TreeDownloader = Fiber.extend(function () {
         Please see https://github.com/jeromeetienne/gowiththeflow.js to learn more about the
         really small library we opted to use.
         */
-
-        // afterFetch pointcut if available
-        // this.pointcuts[resolvedUrl] = result.pointcuts;
-        var pointcuts = RulesEngine.getPointcuts(node.getValue().path);
-        var pointcutsStr = RulesEngine.getPointcuts(node.getValue().path, true);
-        var afterFetch = pointcuts.afterFetch || [];
-        var parentName = (node.getParent()) ? node.getParent().getValue().name : '';
-        var parentUrl = (node.getParent()) ? node.getParent().getValue().path : '';
-
-        // create a new flow control object and prime it with our contents
+        var pointcuts = RulesEngine.getContentRules(node.getValue().path);
+        var i, j, len, jLen, found;
         var apFlow = new Flow();
-        apFlow.seq(function (next) {
-          next(null, contents);
-        });
 
-        // for every "after fetch" download, call it with contents, moduleName, and parentName
-        var makeFlow = function (i) {
+        apFlow.seq(function (next) {
+          next(null, downloadedContent);
+        });
+        var makeFlow = function (fn) {
           apFlow.seq(function (next, error, contents) {
-            afterFetch[i](next, contents, node.getValue().name, parentName, parentUrl);
+            fn(next, contents);
           });
         };
-        for (var i = 0, len = afterFetch.length; i < len; i++) {
-          makeFlow(i);
+        for (i = 0, len = pointcuts.length; i < len; i++) {
+          makeFlow(pointcuts[i]);
         }
 
         // once all contents are resolved, see if we have an object (a neat assignment trick)
@@ -4419,10 +4728,6 @@ var TreeDownloader = Fiber.extend(function () {
             // no content was returned at all. This happens when there is explicitly nothing to eval
             return this.reduceCallsRemaining(callback, node);
           }
-
-          var before = (pointcutsStr.before) ? [pointcutsStr.before, '\n'].join('') : '';
-          var after = (pointcutsStr.after) ? [pointcutsStr.after, '\n'].join('') : '';
-          contents = [before, contents, after].join('');
 
           var parent = node;
           var found = {};
@@ -4467,7 +4772,7 @@ var TreeDownloader = Fiber.extend(function () {
 
             // remove already-defined AMD modules before we go further
             for (i = 0, len = tempRequires.length; i < len; i++) {
-              name = RulesEngine.resolveIdentifier(tempRequires[i], node.getValue().resolvedId);
+              name = RulesEngine.resolveModule(tempRequires[i], node.getValue().resolvedId);
               if (!Executor.isModuleDefined(name) && !Executor.isModuleDefined(tempRequires[i])) {
                 requires.push(tempRequires[i]);
               }
@@ -4480,7 +4785,7 @@ var TreeDownloader = Fiber.extend(function () {
               this.increaseCallsRemaining(requires.length);
             }
             for (i = 0, len = requires.length; i < len; i++) {
-              name = (results.amd) ? RulesEngine.resolveIdentifier(requires[i], node.getValue().resolvedId): requires[i];
+              name = (results.amd) ? RulesEngine.resolveModule(requires[i], node.getValue().resolvedId): requires[i];
               path = ''; // calculate path on recusion using parent
               childNode = TreeDownloader.createNode(name, path);
               node.addChild(childNode);
@@ -4785,6 +5090,9 @@ context.Inject = {
     createRequire: proxy(InjectCore.createRequire, InjectCore),
     createDefine: proxy(InjectCore.createDefine, InjectCore)
   },
+
+  plugins: {},
+  
   /**
       Exposes easyXDM API for doing cross-domain messaging.
       @see <a href="http://www.easyxdm.net">easyXDM</a>
@@ -4815,51 +5123,47 @@ context.Inject = {
     @public
   */
   enableAMDPlugins: function () {
-    RulesEngine.addRule(/^.+?\!.+$/, {
-      last: true,
-      useSuffix: false,
-      path: function () {
-        return ''; // no path, no fetch!
-      },
-      pointcuts: {
-        afterFetch: function (next, text, moduleName, requestorName, requestorUrl) {
-          var pieces = moduleName.split('!');
-          var pluginId = RulesEngine.resolveIdentifier(pieces[0], requestorName);
-          var pluginUrl = RulesEngine.resolveUrl(pluginId, requestorUrl);
-          var identifier = pieces[1];
+    // modules matching pattern
+    RulesEngine.addFetchRule(/^.+?\!.+$/, function (next, content, resolver, communicator, options) {
+      var moduleName = options.moduleId;
+      var requestorName = options.parentId;
+      var requestorUrl = options.parentUrl;
 
-          var rq = InjectCore.createRequire(moduleName, requestorUrl);
-          rq.ensure([pluginId], function (pluginRequire) {
-            // the plugin must come from the contextual require
-            // any subsequent fetching depends on the resolved plugin's location
-            var plugin = pluginRequire(pluginId);
-            var remappedRequire = InjectCore.createRequire(pluginId, pluginUrl);
+      var pieces = moduleName.split('!');
+      var pluginId = resolver.module(pieces[0], requestorName);
+      var pluginUrl = resolver.url(pluginId, requestorUrl);
+      var identifier = pieces[1];
 
-            var resolveIdentifier = function (name) {
-              return RulesEngine.resolveIdentifier(name, requestorName);
-            };
-            var normalized = (plugin.normalize) ? plugin.normalize(identifier, resolveIdentifier) : resolveIdentifier(identifier);
-            var complete = function (contents) {
-              if (typeof(contents) === 'string') {
-                contents = ['module.exports = decodeURIComponent("', encodeURIComponent(contents), '");'].join('');
-              }
-              next(null, contents);
-            };
-            complete.fromText = function (ftModname, body) {
-              if (!body) {
-                body = ftModname;
-                ftModname = null;
-              }
+      var rq = Inject.createRequire(moduleName, requestorUrl);
+      rq.ensure([pluginId], function (pluginRequire) {
+        // the plugin must come from the contextual require
+        // any subsequent fetching depends on the resolved plugin's location
+        var plugin = pluginRequire(pluginId);
+        var remappedRequire = Inject.createRequire(pluginId, pluginUrl);
 
-              // use the executor
-              Executor.runModule(ftModname, body, pluginUrl);
+        var resolveIdentifier = function (name) {
+          return resolver.module(name, requestorName);
+        };
+        var normalized = (plugin.normalize) ? plugin.normalize(identifier, resolveIdentifier) : resolveIdentifier(identifier);
+        var complete = function (contents) {
+          if (typeof(contents) === 'string') {
+            contents = ['module.exports = decodeURIComponent("', encodeURIComponent(contents), '");'].join('');
+          }
+          next(null, contents);
+        };
+        complete.fromText = function (ftModname, body) {
+          if (!body) {
+            body = ftModname;
+            ftModname = null;
+          }
 
-              next(null, body);
-            };
-            plugin.load(normalized, remappedRequire, complete, {});
-          });
-        }
-      }
+          // use the executor
+          Executor.runModule(ftModname, body, pluginUrl);
+
+          next(null, body);
+        };
+        plugin.load(normalized, remappedRequire, complete, {});
+      });
     });
   },
   /**
@@ -4914,27 +5218,80 @@ context.Inject = {
   },
 
   /**
+   * Set the global AMD property. Setting this to "true" can disable
+   * the global AMD detection. This is really useful in scenarios where
+   * you anticipate mixing script tags with your loader framework
+   */
+  disableGlobalAMD: function (disable) {
+    if (disable) {
+      context.define = Inject.INTERNAL.createDefine(null, null, true);
+    }
+    else {
+      context.define = Inject.INTERNAL.createDefine();
+    }
+  },
+
+  /**
       Clears the local storage caches.
       @see InjectCore.clearCache
       @method
       @public
    */
   clearCache: proxy(InjectCore.clearCache, InjectCore),
-  /**
-      @see RulesEngine.manifest
-      @method
-      @public
-   */
-  manifest: function () {
-    RulesEngine.manifest.apply(RulesEngine, arguments);
-  },
+
   /**
       @see RulesEngine.addRule
       @method
+      @deprecated
       @public
    */
   addRule: function () {
     RulesEngine.addRule.apply(RulesEngine, arguments);
+  },
+
+  /**
+      @see RulesEngine.addModuleRule
+      @method
+      @public
+   */
+  addModuleRule: function () {
+    RulesEngine.addModuleRule.apply(RulesEngine, arguments);
+  },
+
+  /**
+      @see RulesEngine.addFileRule
+      @method
+      @public
+   */
+  addFileRule: function () {
+    RulesEngine.addFileRule.apply(RulesEngine, arguments);
+  },
+
+  /**
+      @see RulesEngine.addContentRule
+      @method
+      @public
+   */
+  addContentRule: function () {
+    RulesEngine.addContentRule.apply(RulesEngine, arguments);
+  },
+
+  /**
+      @see RulesEngine.addFetchRule
+      @method
+      @public
+   */
+  addFetchRule: function () {
+    RulesEngine.addFetchRule.apply(RulesEngine, arguments);
+  },
+
+  /**
+      @see RulesEngine.addPackage
+      @method
+      @public
+   */
+  addPackage: function () {
+    RulesEngine.addPackage.apply(RulesEngine, arguments);
   },
 
   /**
@@ -4948,6 +5305,15 @@ context.Inject = {
     args.push(context.Inject);
     InjectCore.plugin.apply(InjectCore, args);
   },
+
+  createRequire: function() {
+    return InjectCore.createRequire.apply(InjectCore, arguments);
+  },
+
+  createDefine: function() {
+    return InjectCore.createDefine.apply(InjectCore, arguments);
+  },
+
   /**
       CommonJS and AMD require()
       @see InjectCore.createRequire
@@ -4991,5 +5357,5 @@ context.require = context.Inject.INTERNAL.createRequire();
     @public
  */
 context.define = context.Inject.INTERNAL.createDefine();
-;context.Inject.version = "v0.4.2";
+;context.Inject.version = "0.5.0";
 })(this);
