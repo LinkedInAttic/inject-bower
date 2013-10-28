@@ -217,6 +217,7 @@ governing permissions and limitations under the License.
      * @type {Object}
      * @see localStorageShim
      */
+    /* jshint sub: true */
     window['localStorage'] = window['localStorage'] || localStorageShim;
     syncStoredKeys();
   }

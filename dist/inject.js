@@ -2,7 +2,6 @@
  * @license
  * Inject (c) 2011 LinkedIn [https://github.com/linkedin/inject] Apache Software License 2.0
  * lscache (c) 2011 Pamela Fox [https://github.com/pamelafox/lscache] Apache Software License 2.0
- * Link.js (c) 2012 Calyptus Life AB, Sweden [https://github.com/calyptus/link.js] Simplified BSD & MIT License
  * GoWithTheFlow.js (c) 2011 Jerome Etienne, [https://github.com/jeromeetienne/gowiththeflow.js] MIT License
  * easyXDM (c) 2011 2009-2011 Øyvind Sean Kinsey, oyvind@kinsey.no [https://github.com/oyvindkinsey/easyXDM] MIT License
  */
@@ -32,12 +31,6 @@ governing permissions and limitations under the License.
  * @constant
  */
 var IS_IE = eval('/*@cc_on!@*/false');
-
-/**
- * a simple sniff to determine if this is the FF engine
- * @constant
- */
-var IS_GK = false;
 
 // sniffs and assigns UA tests
 (function () {
@@ -143,10 +136,45 @@ var FUNCTION_BODY_REGEX = /[\w\W]*?\{([\w\W]*)\}/m;
 var WHITESPACE_REGEX = /\s+/g;
 
 /**
- * extract require() statements from within a larger string
+ * Extract require() statements from within a larger string.
+ * Used by analyzer to parse files.
  * @constant
  */
-var REQUIRE_REGEX = /(?:^|[^\w\$_.\(])require\s*\(\s*("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*')\s*\)/g;
+var REQUIRE_REGEX = new RegExp(
+  '(?:^|[\\s;,=\\?:\\}\\)\\(])' + // begins with start of string, and any symbol a function call() can follow
+  'require[\\s]*\\('+             // the keyword "require", whitespace, and then an opening paren
+  '[\'"]'+                        // a quoted stirng (require takes a single or double quoted string)
+  '([^\'"]+?)'+                   // the valid characters for a "module identifier"... includes AMD characters. You cannot match a quote
+  '[\'"]' +                       // the closing quote character
+  '\\)',                          // end of paren for "require"
+  'gim'                           // flags: global, case-insensitive, multiline
+);
+
+/**
+ * Extract define() statements from within a larger string.
+ * Used by analyzer to parse files.
+ * @constant
+ */
+var DEFINE_REGEX = new RegExp(
+  '(?:^|[\\s;,\\?\\}\\)\\(])' +   // begins with start of string, and any symbol a function call() can follow
+  'define[\\s]*\\(' +             // the "define" keyword, followed by optional whitespace and its opening paren
+  '[\\w\\W]*?\\[' +               // anything (don't care) until we hit the first [
+  '([\\w\\W]*?)' +                // our match (contents of the array)
+  '\\]',                          // the closing bracket
+  'gim'                           // flags: global, case-insensitive, multiline
+);
+
+/**
+ * Extract terms from define statements.
+ * Used by analyzer to parse files in conjunction with DEFINE_REGEX.
+ * @constant
+ */
+var DEFINE_TERM_REGEX = new RegExp(
+  '[\'"]' +                       // a quote
+  '([\\w\\W]*?)' +                // the term inside of quotes
+  '[\'"]',                        // the closing quotes
+  'gim'                           // flags: global, case-insensitive, multiline
+);
 
 /**
  * extract define() statements from within a larger string
@@ -154,7 +182,7 @@ var REQUIRE_REGEX = /(?:^|[^\w\$_.\(])require\s*\(\s*("[^"\\]*(?:\\.[^"\\]*)*"|'
  * don't-be-greedy modifiers on the \S and \w\W sections
  * @constant
  */
-var DEFINE_EXTRACTION_REGEX = /(?:^|[\s]+)define[\s]*\([\s]*((?:"|')\S+?(?:"|'))?,?[\s]*(?:\[([\w\W]+?)\])?/g;
+var IS_AMD_REGEX = /(?:^|[\s]+)define[\s]*\(/g;
 
 /**
  * index of all commonJS builtins in a function arg collection
@@ -444,16 +472,16 @@ governing permissions and limitations under the License.
     @global
 */
 var commonJSHeader = (['',
-  '__INJECT_NS__.INTERNAL.execute.__FUNCTION_ID__ = function() {',
+  '__INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.fn = function() {',
   '  with (window) {',
-  '  __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__ = __INJECT_NS__.INTERNAL.createModule("__MODULE_ID__", "__MODULE_URI__");',
-  '    __INJECT_NS__.INTERNAL.execs.__FUNCTION_ID__ = function() {',
+  '    __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.innerFn = function() {',
   '      // id: __MODULE_ID__ uri: __MODULE_URI__',
-  '      var module = __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__,',
-  '          require = __INJECT_NS__.INTERNAL.createRequire(module.id, module.uri),',
-  '          define = __INJECT_NS__.INTERNAL.createDefine(module.id, module.uri),',
-  '          exports = module.exports;',
-  '']).join('\n');
+  '      var module = __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.module,',
+  '          require = __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.require,',
+  '          define = __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.define,',
+  '          exports = module.exports;',  
+  '      try{module.undefined_function();}catch(e){module.__error_line = e;}' // NOTE: Must be on one line for clean error reporting
+  ]).join('\n');
 
 /**
     CommonJS footer with placeholders for Inject namespace, exception, and
@@ -462,18 +490,16 @@ var commonJSHeader = (['',
     @global
 */
 var commonJSFooter = (['',
-  '    __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__ = module;',
+  '      __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.module = module;',
   '    };',
   '    __INJECT_NS__.INTERNAL.defineExecutingModuleAs("__MODULE_ID__", "__MODULE_URI__");',
-  '    __error = window.onerror;',
   '    try {',
-  '      __INJECT_NS__.INTERNAL.execs.__FUNCTION_ID__.call(__INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__);',
+  '      __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.innerFn.call(__INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.module);',
   '    }',
   '    catch (__EXCEPTION__) {',
-  '      __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__.error = __EXCEPTION__;',
+  '      __INJECT_NS__.INTERNAL.executor.__FUNCTION_ID__.module.__error = __EXCEPTION__;',
   '    }',
   '    __INJECT_NS__.INTERNAL.undefineExecutingModule();',
-  '    return __INJECT_NS__.INTERNAL.modules.__FUNCTION_ID__;',
   '  }',
   '};',
   '']).join('\n');
@@ -746,1316 +772,7 @@ var commonJSFooter = (['',
 
     return Fiber;
   }));
-} ());;/*jshint multistr:true */
-
-// this file has been modified from its original source
-// changed export to a local variable
-
-/*
-Link.js is dual-licensed under both the MIT and Simplified BSD license.
-
-
-Simplified BSD License
-
-Copyright (c) 2012 Calyptus Life AB, Sweden
-
-The tokenizer is derived from http://code.google.com/p/jstokenizer/
-Copyright (c) 2011 Ariya Hidayat <ariya.hidayat@gmail.com>
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met: 
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer. 
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution. 
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-
-MIT License
-
-Copyright (c) 2012 Calyptus Life AB, Sweden
-
-The tokenizer is derived from http://code.google.com/p/jstokenizer/
-Copyright (c) 2011 Ariya Hidayat <ariya.hidayat@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
-
-
-var LinkJS = {};
-
-// BEGIN LINKJS LIBRARY
-
-// version: 0.15;
-
-(function(){
-"use strict";
-
-// if (typeof exports !== 'undefined') exports.parse = parse;
-LinkJS.parse = parse;
-
-var hop = {}.hasOwnProperty;
-
-// Conversion options
-
-var defaultOptions = {
-
-	// Define the output format. These values can be combined to create a multi-format file.
-	cjs: true,      // If true, convert to a CommonJS compatible module,
-	amd: false,     // If true, convert to an AMD compatible module.
-	global: false,  // If true, export to the global object for script tag loading.
-
-	// Define a synchronous function that determines a dependency's exported identifiers.
-	// Modules that don't allow for static analysis may need to be executed to be resolved.
-	// If not set, dynamic mode is used.
-	resolve: null,
-
-	// Enables enforcement of "use strict" mode. The compiled code will require ES5.
-	// When this option is false, strict mode is not enforced on top level code.
-	// Wrap your code in a strict function if you want to enforce it on newer engines
-	// yet remain compatible with old.
-	strict: false
-
-};
-
-// Boilerplate
-
-var umd = {
-
-	'':
-		'$',
-
-	'cjs':
-		'$',
-
-	'global':
-		'(function(exports){\nfunction require(id){ return this; };\n$\n}.call(this, this));',
-
-	'cjs,global':
-		'(function(require, exports){\n$\n}' +
-		'.call(this, typeof require === "undefined" ? function(){return this} : require, this));',
-
-	'amd':
-		'define(function(require, exports, module){\n$\n});',
-
-	'cjs,amd':
-		'(typeof define === "function" && define.amd ? define : ' +
-		'function(factory){factory.call(exports, require, exports, module)}' +
-		')(function(require, exports, module){\n$\n});',
-
-	'amd,global':
-		'(typeof define === "function" && define.amd ? define : ' +
-		'function(factory){factory.call(this, function(){return this}, this)}' +
-		')(function(require, exports, module){\n$\n});',
-
-	'cjs,amd,global':
-		'(typeof define === "function" && define.amd ? define : ' +
-		'function(factory){var e = typeof exports == "undefined" ? this : exports;' +
-		'factory.call(e, typeof require == "undefined" ? function(){return this} : require, e, typeof module == "undefined" ? null : module)}' +
-		')(function(require, exports, module){\n$\n});'
-
-};
-
-// TODO: AMD modules should be destructured to CommonJS to be fully compatible.
-
-var define = "\
-var define = function(id, deps, factory){\
-	if (typeof id !== 'string'){ factory = deps; deps = id; }\
-	if (factory == null){ factory = deps; deps = ['require', 'exports', 'module']; }\
-	function resolveList(deps){\
-		var required = [];\
-		for (var i = 0, l = deps.length; i < l; i++)\
-			required.push(\
-				(deps[i] === 'require') ? amdRequire :\
-				(deps[i] === 'exports') ? exports :\
-				(deps[i] === 'module') ? module :\
-				require(deps[i])\
-			);\
-		return required;\
-	}\
-	function amdRequire(ids, success, failure){\
-		if (typeof ids === 'string') return require(ids);\
-		var resolved = resolveList(ids);\
-		/*try { var resolved = resolveList(ids); }\
-		catch (error) { if (failure) failure(error); return; }*/\
-		if (success) success.apply(null, resolved);\
-	}\
-	amdRequire.toUrl = require.resolve;\
-	if (typeof factory === 'function') factory = factory.apply(exports, resolveList(deps));\
-	if (factory) module.exports = factory;\
-};define.amd={};\
-";
-
-// Transpiler
-
-function ModuleDefinition(source){
-	this.id = null;
-	this.source = source;
-
-	this.requires = [];
-	this.imports  = [];
-
-	this.exportedVariables = [];
-	this.exportedFunctions = [];
-	this.declaredVariables = [];
-	this.declaredFunctions = [];
-	this.expectedVariables = [];
-
-	this.lexicalExports = true; // TODO
-	this.exportedProperties = []; // TODO
-
-	this.strict = 0;
-	this.lexicalScope = true;
-	this.amd = false;
-
-	this.tokens = [];
-	this.lexicalEnvironment = {};
-};
-
-ModuleDefinition.prototype = {
-
-	resolve: function(resolver){
-		var input = this.source,
-		    newLine = /\r\n/.test(input) ? '\r\n' : '\n',
-		    output = [],
-		    imports = this.imports,
-		    lexicalEnvironment = this.lexicalEnvironment,
-		    imported = {};
-
-		// Write strict mode
-		output.push(input.substr(0, this.strict));
-		if (this.strict) output.push(newLine);
-
-		// Resolve imported properties
-		if (typeof resolver === 'function')
-			for (var i = 0, l = imports.length; i < l; i++){
-				var id = imports[i],
-					name = '__MODULE' + i + '__',
-					m = resolver(id);
-
-				if (m && m.length)
-					for (var j = 0, k = m.length; j < k; j++){
-						var identifier = m[j];
-						if (hop.call(imported, identifier) && imported[identifier].id !== id)
-							error('importConflict', imported[identifier].id, id, identifier, this.id || '');
-						else if (!lexicalEnvironment[identifier] || !hop.call(lexicalEnvironment, identifier))
-							imported[identifier] = { id: id, name: name };
-						else if ((lexicalEnvironment[identifier] & Exported) === Exported)
-							error('exportConflict', id, identifier, this.id || '');
-						else
-							warn('shadowedImport', id, identifier, this.id || '');
-					}
-
-				// Import module
-				output.push(
-					i == 0 ? 'var ' : ', ',
-					name, ' = require("', id, '")'
-				);
-			}
-		if (imports.length) output.push(';', newLine);
-
-		// Redeclare variables at the top
-		for (var i = 0, l = this.declaredVariables.length; i < l; i++){
-			output.push(i == 0 ? 'var ' : ', ');
-			output.push(this.declaredVariables[i]);
-		}
-		if (l) output.push(';', newLine);
-
-		// Export hoisted function declarations at the top
-		for (var i = 0, l = this.exportedFunctions.length; i < l; i++){
-			output.push('exports.', this.exportedFunctions[i], ' = ', this.exportedFunctions[i], '; ');
-		}
-		if (l) output.push(newLine);
-
-		// Rewrite the source code
-		var last = this.strict, tokens = this.tokens;
-		for (var i = 0, l = tokens.length; i < l; i++){
-			var token = tokens[i], type = token.type;
-			output.push(input.substring(last, token.start));
-			last = token.start;
-			if (type === Identifier){
-				// Rewrite imported and exported top level variables
-				var identifier = token.value;
-				if ((lexicalEnvironment[identifier] & Exported) === Exported)
-					output.push('exports.');
-				else if (hop.call(imported, identifier))
-					output.push(imported[identifier].name + '.');
-
-			} else if (type === RequireStatement){
-				// Strip require statement
-				last = token.end;
-
-			} else if (type === ExportsStatement){
-				// Strip exports label
-				last = token.expressionStart;
-
-			} else if (type === VariableDeclaration){
-				// Strip variable declaration
-				last = token.expressionStart;
-			}
-		}
-		output.push(input.substring(last, input.length));
-
-		return output.join('');
-	},
-
-	wrapStrict: function(){
-		var output = [],
-		    exports = this.exportedProperties,
-		    imports = this.imports;
-
-		for (var i = 0, l = exports.length; i < l; i++)
-			output.push('exports.', exports[i], '=');
-		if (l > 0) output.push('{}.undefined;');
-
-		for (var i = 0, l = imports.length; i < l; i++)
-			output.push('with(require("', imports[i], '"))\n');
-
-		if (imports.length) output.push('(function(){');
-
-		exports = this.exportedVariables.concat(this.exportedFunctions);
-		if (exports.length){
-			for (var i = 0, l = exports.length; i < l; i++){
-				var e = exports[i], v = e == 'v' ? 'b' : 'v';
-				output.push(
-					i == 0 ? '({}.constructor.defineProperties(this, {' : ',',
-					e, ':{get:function(){return ', e, '},set:function(', v, '){', e, '=', v,'},enumerable:true}'
-				);
-			}
-			if (l) output.push('}));');
-		}
-
-		output.push(this.source);
-
-		if (imports.length) output.push('}.call(this))');
-
-		return output.join('');
-	},
-
-	wrap: function(){
-		var output = [], exports, imports = this.imports;
-
-		exports = this.exportedVariables.concat(this.exportedProperties);
-		for (var i = 0, l = exports.length; i < l; i++)
-			output.push('exports.', exports[i], '=');
-		if (l > 0) output.push('{}.undefined;');
-
-		for (var i = 0, l = imports.length; i < l; i++)
-			output.push('with(require("', imports[i], '"))\n');
-
-		output.push('with(exports)(function(){');
-
-		exports = this.exportedFunctions;
-		for (var i = 0, l = exports.length; i < l; i++)
-			output.push('this.', exports[i], '=', exports[i], ';');
-
-		output.push(
-			'with(this){\n',
-			this.source,
-			'\n}'
-		);
-
-		output.push('}.call(exports));');
-
-		return output.join('');
-	},
-
-	convert: function(options){
-		if (!options) options = defaultOptions;
-		var result;
-
-		if (!this.imports.length && !this.exportedFunctions.length && !this.exportedVariables.length)
-			result = this.source;
-		else if (this.lexicalScope && options.resolve)
-			result = this.resolve(options.resolve);
-		else if (this.strict && options.strict)
-			result = this.wrapStrict();
-		else
-			result = this.wrap();
-
-		var boilerplates = [];
-		if (options.cjs) boilerplates.push('cjs');
-		if (options.amd) boilerplates.push('amd');
-		if (options.global) boilerplates.push('global');
-		
-		if ((this.amd || this.lexicalEnvironment['define'] === Undeclared) && (!options.amd || boilerplates.length > 1))
-			result = define + result;
-
-		return umd[boilerplates].replace('$', result);
-	}
-
-};
-
-// Error helpers
-
-var errorMessages = {
-
-	'importConflict': 
-		'Import conflict: "$1" and "$2" both export "$3"\n' +
-		'Resolve it by explicitly naming one of them: var $32 = require("$2").$3\n[$4]',
-
-	'exportConflict': 
-		'Export conflict: "$1" also contains the exported "$2"\n' +
-		'Resolve it by explicitly naming one of them: var $22 = require("$1").$2\n[$3]',
-
-	'shadowedImport':
-		'Import shadowed: The variable $2 is declared by this module but it\'s also\n' +
-		'imported through "$1". Only the locally declared variable will be used.\n[$3]',
-
-	'invalidArgs':
-		'Invalid arguments.',
-
-	'nestedRequire':
-		'The require statement can only be applied in the top scope. (Line $1)',
-
-	'nestedExport':
-		'The exports statement can only be applied in the top scope. (Line $1)',
-
-	'unknownExport':
-		'Unknown export statement. (Line $1)',
-
-	'undeclaredExport':
-		'Cannot export undeclared variable: $1'
-
-};
-
-function formatMessage(args){
-	return errorMessages[args[0]]
-	       .replace(/\$(\d)/g, function(s, i){ return args[i]; })
-}
-
-function warn(){
-	console.warn(formatMessage(arguments));
-};
-
-function error(){
-	throw new Error(formatMessage(arguments));
-};
-
-// Tokenizer
-
-var source,
-	index,
-	lineNumber,
-	length,
-	previousToken;
-
-var EOF = 2,
-	Identifier = 3,
-	Keyword = 4,
-	Literal = 5,
-	Punctuator = 7,
-	StringLiteral = 8,
-
-	VariableDeclaration = 10,
-	FunctionDeclaration = 11,
-	ExportsStatement = 12,
-	RequireStatement = 13;
-
-function createToken(type, value, start){
-	return {
-		type: type,
-		value: value,
-		lineNumber: lineNumber,
-		start: start,
-		end: index
-	};
-}
-
-function isDecimalDigit(ch) {
-	return '0123456789'.indexOf(ch) >= 0;
-}
-
-function couldBeRegExp(){
-	// TODO: Proper regexp handling, when I find a case for it
-	var token = previousToken;
-	return typeof token === 'undefined' ||
-		(token.type === Punctuator && '})]'.indexOf(token.value) == -1) ||
-		(token.type === Keyword && isKeyword(token.value));
-}
-
-function isWhiteSpace(ch) {
-	// TODO Unicode "space separator"
-	return (ch === ' ') || (ch === '\u0009') || (ch === '\u000B') ||
-		(ch === '\u000C') || (ch === '\u00A0') || (ch === '\uFEFF');
-}
-
-function isPunctuator(ch){
-	return '=<>{}();:,.!?+-*%&|^/[]~'.indexOf(ch) >= 0;
-}
-
-function isLineTerminator(ch) {
-	return (ch === '\n' || ch === '\r' || ch === '\u2028' || ch === '\u2029');
-}
-
-function isKeyword(id) {
-	switch (id) {
-
-	// Keywords.
-	case 'break':
-	case 'case':
-	case 'catch':
-	case 'continue':
-	case 'debugger':
-	case 'default':
-	case 'delete':
-	case 'do':
-	case 'else':
-	case 'finally':
-	case 'for':
-	case 'function':
-	case 'if':
-	case 'in':
-	case 'instanceof':
-	case 'new':
-	case 'return':
-	case 'switch':
-	case 'this':
-	case 'throw':
-	case 'try':
-	case 'typeof':
-	case 'var':
-	case 'void':
-	case 'while':
-	case 'with':
-		return true;
-
-	// Future reserved words.
-	// 'const' is specialized as Keyword in V8.
-	case 'const':
-		return true;
-
-	// strict mode
-	case 'implements':
-	case 'interface':
-	case 'let':
-	case 'package':
-	case 'private':
-	case 'protected':
-	case 'public':
-	case 'static':
-	case 'yield':
-		return true;
-	}
-
-	return false;
-}
-
-function nextChar() {
-	var ch = '\x00',
-		idx = index;
-	if (idx < length) {
-		ch = source[idx];
-		index += 1;
-	}
-	return ch;
-}
-
-function skipComment() {
-	var ch, blockComment, lineComment;
-
-	blockComment = false;
-	lineComment = false;
-
-	while (index < length) {
-		ch = source[index];
-
-		if (lineComment) {
-			nextChar();
-			if (isLineTerminator(ch)) {
-				lineComment = false;
-				if (ch ===  '\r' && source[index] === '\n') {
-					nextChar();
-				}
-				lineNumber += 1;
-			}
-		} else if (blockComment) {
-			nextChar();
-			if (ch === '*') {
-				ch = source[index];
-				if (ch === '/') {
-					nextChar();
-					blockComment = false;
-				}
-			} else if (isLineTerminator(ch)) {
-				if (ch ===  '\r' && source[index] === '\n') {
-					nextChar();
-				}
-				lineNumber += 1;
-			}
-		} else if (ch === '/') {
-			ch = source[index + 1];
-			if (ch === '/') {
-				nextChar();
-				nextChar();
-				lineComment = true;
-			} else if (ch === '*') {
-				nextChar();
-				nextChar();
-				blockComment = true;
-			} else {
-				break;
-			}
-		} else if (isWhiteSpace(ch)) {
-			nextChar();
-		} else if (isLineTerminator(ch)) {
-			nextChar();
-			if (ch ===  '\r' && source[index] === '\n') {
-				nextChar();
-			}
-			lineNumber += 1;
-		} else {
-			break;
-		}
-	}
-}
-
-function scanIdentifier() {
-	var ch, start, id;
-	ch = source[index];
-	start = index;
-	id = nextChar();
-	while (index < length) {
-		ch = source[index];
-		if (isWhiteSpace(ch) || isLineTerminator(ch) || isPunctuator(ch) ||
-			ch == '\'' || ch == '"')
-			break;
-		id += nextChar();
-	}
-
-	if (id.length === 1)
-		return createToken(Identifier, id, start);
-
-	if (isKeyword(id))
-		return createToken(Keyword, id, start);
-
-	if (id === 'null' || id === 'true' || id === 'false')
-		return createToken(Literal, id, start);
-
-	return createToken(Identifier, id, start);
-}
-
-function scanPunctuator() {
-	var start = index,
-		ch1 = source[index],
-		ch2 = source[index + 1];
-
-	if (ch1 === ch2 && ('+-<>&|'.indexOf(ch1) >= 0))
-		return createToken(Punctuator, nextChar() + nextChar(), start);
-
-	return createToken(Punctuator, nextChar(), start);
-}
-
-function scanNumericLiteral() {
-	var number, ch;
-	while (index < length) {
-		ch = source[index];
-		if ('0123456789abcdefABCDEF.xXeE'.indexOf(ch) < 0) {
-			if (ch != '+' && ch != '-') break;
-			ch = source[index - 1];
-			if (ch != 'e' && ch != 'E') break;
-		}
-		nextChar();
-	}
-	return createToken(Literal);
-}
-
-function scanStringLiteral() {
-	var str = '', quote, start, ch;
-
-	quote = source[index];
-	start = index;
-	nextChar();
-
-	while (index < length) {
-		ch = nextChar();
-
-		if (ch === quote) {
-			break;
-		} else if (ch === '\\') {
-			ch = nextChar();
-			if (!isLineTerminator(ch)) {
-				str += '\\';
-				str += ch;
-			}
-		} else {
-			str += ch;
-		}
-	}
-
-	return createToken(StringLiteral, str, start);
-}
-
-function scanRegExp() {
-	nextChar();
-	var start = index;
-	while (index < length) {
-		var ch = nextChar();
-		if (ch === '\\')
-			nextChar();
-		if (ch === '/')
-			break;
-		if (ch === '[')
-			while (index < length && nextChar() !== ']');
-	}
-	while (index < length && (/[a-z]/i).test(source[index]))
-		nextChar();
-	return createToken(Literal);
-}
-
-function advance() {
-	var ch;
-
-	skipComment();
-
-	if (index >= length)
-		return createToken(EOF);
-
-	ch = source[index];
-
-	if (ch === '/' && couldBeRegExp())
-		return scanRegExp();
-
-	if (isPunctuator(ch) && (ch != '.' || !isDecimalDigit(source[index+1])))
-		return scanPunctuator();
-
-	if (ch === '\'' || ch === '"')
-		return scanStringLiteral();
-
-	if (ch === '.' || isDecimalDigit(ch))
-		return scanNumericLiteral();
-
-	return scanIdentifier();
-}
-
-// Parser
-
-var module,
-	scope,
-	globalScope,
-	scopeAliases,
-	scopeTokens,
-	dependencies,
-	buffer;
-
-var Undeclared = 0,
-	DeclaredVariable = 1,
-	DeclaredFunction = 2 | DeclaredVariable,
-	Exported = 4,
-	ExportedVariable = DeclaredVariable | Exported,
-	ExportedFunction = DeclaredFunction | Exported,
-	ExportedProperty = 8 | Exported;
-
-var Required = 1,
-	Imported = 3;
-
-function lex(){
-	var token;
-
-	if (buffer){
-		token = buffer;
-		buffer = null;
-		return token;
-	}
-	buffer = null;
-	return previousToken = advance();
-}
-
-function lookahead(){
-	if (buffer !== null)
-		return buffer;
-	return buffer = previousToken = advance();
-}
-
-function expect(value){
-	var token = lex();
-	if (token.type !== Punctuator || token.value !== value) {
-		throw new Error('Unexpected token: ' + token.value + ' at line ' + lineNumber);
-	}
-}
-
-function expectKeyword(keyword){
-	var token = lex();
-	if (token.type !== Keyword || token.value !== keyword) {
-		throw new Error('Unexpected token: ' + token.value);
-	}
-}
-
-function match(value){
-	var token = lookahead();
-	return token.type === Punctuator && token.value === value;
-}
-
-function matchKeyword(keyword){
-	var token = lookahead();
-	return token.type === Keyword && token.value === keyword;
-}
-
-function matchBlockStart(){
-	var token = lookahead();
-	if (token.type == Keyword){
-		if (token.value == 'case'){
-			lex();
-			lex();
-			return true;
-		}
-		if (token.value == 'default'){
-			lex();
-			return true;
-		}
-		return token.value == 'do' || token.value == 'else' ||
-			   token.value == 'finally' || token.value == 'try';
-	}
-	return false;
-}
-
-function matchParenthesisBlockStart(){
-	var token = lookahead();
-	if (token.type == Keyword)
-		return token.value == 'if' || token.value == 'for' ||
-			   token.value == 'catch' || token.value == 'with' ||
-			   token.value == 'switch' || token.value == 'while';
-	return false;
-}
-
-function matchASI(){
-	// TODO Proper ASI in all cases
-	var token = lookahead();
-	return token.type !== Punctuator &&
-		   (token.type !== Keyword || (token.value != 'in' && token.value != 'instanceof'));
-}
-
-function scanObjectInitializer(){
-	expect('{');
-	while (!match('}')){
-		var token = lex();
-		if (token.type == Identifier && (token.value == 'get' || token.value == 'set') && !match(':'))
-			lex();
-		expect(':');
-		scanExpression();
-		if (match('}')) break;
-		expect(',');
-	}
-	expect('}');
-}
-
-function scanArrayInitializer(){
-	expect('[');
-	while (!match(']')){
-		scanExpression();
-		if (match(']')) break;
-		expect(',');
-	}
-	expect(']');
-}
-
-function scanParenthesis(){
-	expect('(');
-	if (matchKeyword('var'))
-		scanVariableDeclarationList(Undeclared, DeclaredVariable);
-	else
-		scanExpression();
-	 while(match(',') || match(';')){
-		lex();
-		scanExpression();
-	};
-	expect(')');
-}
-
-function scanRequireExpression(){
-	expect('(');
-	if (lookahead().type == StringLiteral){
-		var identifier = lex().value;
-		if (match(')')){
-			dependencies[identifier] |= Required;
-			lex();
-			return;
-		}
-	}
-	scanExpression();
-	while(match(',')){
-		lex();
-		if (match(')')) break;
-		scanExpression();
-	}
-	expect(')');
-}
-
-function scanCallExpression(identifier){
-	if (identifier == 'define') return scanDefineStatement();
-	if (identifier == 'require') return scanRequireExpression();
-	if (identifier == 'eval') module.lexicalScope = false;
-	scanExpression();
-}
-
-function scanIdentifierExpression(token){
-	var identifier = token.value;
-	if (!(identifier in scope)) scope[identifier] = Undeclared;
-
-	scopeTokens.push(token);
-
-	if (identifier in scopeAliases){
-		identifier = scopeAliases[identifier];
-		if (globalScope[identifier]) return;
-	} else {
-		if (scope[identifier]) return;
-	}
-	if (match('(')) return scanCallExpression(identifier);
-	if (identifier != 'exports') return;
-	if (match('.')){
-		lex();
-		globalScope[lex().value] |= ExportedProperty;
-	} else if (match('[')){
-		lex();
-		if (lookahead().type === StringLiteral){
-			var value = lex().value;
-			if (match(']')) globalScope[value] |= ExportedProperty;
-		}
-		scanExpression();
-		expect(']');
-	}
-}
-
-function scanExpression(){
-	var token = lookahead();
-	while (token.type != EOF && !match('}') && !match(')') && !match(']') && !match(',') && !match(';')){
-
-		if (token.type == Identifier){
-			lex();
-			scanIdentifierExpression(token);
-			if (matchASI()) break;
-		}
-		else if (token.type == StringLiteral || token.type == Literal){
-			lex();
-			if (matchASI()) break;
-		}
-		else if (matchKeyword('function')){
-			scanFunctionExpression();
-			if (matchASI()) break;
-		}
-		else if (match('{')){
-			scanObjectInitializer();
-			if (matchASI()) break;
-		}
-		else if (match('[')){
-			scanArrayInitializer();
-			if (matchASI()) break;
-
-		} else if (match('(')){
-			scanParenthesis();
-			if (match('{')){
-				scanBlock();
-				return;
-			}
-			if (matchASI()) break;
-		
-		} else if (match('++') || match('--')){
-			lex();
-			var previous = lineNumber;
-			if (matchASI() && previous !== lineNumber) break;
-
-		} else if (match('.')){
-			lex();
-			token = lookahead();
-			if (token.type == Identifier){
-				lex();
-				if (matchASI()) break;
-			}
-		}
-
-		else
-			lex();
-
-		token = lookahead();
-	}
-}
-
-function scanVariableDeclarationList(exported, declared){
-	if (declared){
-		var declarationToken = {
-			type: VariableDeclaration,
-			start: lex().start,
-			expressionStart: lookahead().start,
-			end: 0
-		};
-		if (scope === globalScope)
-			scopeTokens.push(declarationToken);
-	} 
-
-	var token = lex();
-	while(token.type !== EOF){
-		var identifier = token.value;
-		scope[identifier] |= declared;
-		scope[identifier] |= exported;
-
-		scopeTokens.push(token);
-
-		if (match('=') || matchKeyword('in')) scanExpression();
-		if (!match(',')) break;
-		lex();
-		token = lex();
-	}
-
-	if (declared) declarationToken.end = lookahead().start;
-}
-
-function scanCatchStatement(){
-	expectKeyword('catch');
-	// TODO: Variables declared belong to the function scope,
-	// but the caught variable is unique to the catch scope.
-	scanFunction();
-}
-
-function scanArguments(aliases){
-	var token, i = 0;
-	expect('(');
-	if (!match(')')){
-		while ((token = lex()).type != EOF){
-			if (aliases != null && i < aliases.length){
-				scopeAliases[token.value] = aliases[i++];
-			}
-			scope[token.value] |= DeclaredVariable;
-			if (match(')')){
-				break;
-			}
-			expect(',');
-		}
-	}
-	expect(')');
-}
-
-function scanFunction(aliases, identifier){
-	var scopeChain = function(){};
-	scopeChain.prototype = scope;
-	scope = new scopeChain();
-	scope.arguments = DeclaredVariable;
-	if (identifier) scope[identifier] = DeclaredFunction;
-
-	if (aliases){
-		var scopeAliasesChain = function(){};
-		scopeAliasesChain.prototype = scopeAliases;
-		scopeAliases = new scopeAliasesChain();
-	}
-
-	var parentScopeTokens = scopeTokens;
-	scopeTokens = [];
-	scanArguments(aliases);
-	scanBlock();
-
-	for (var i = 0, l = scopeTokens.length; i < l; i++){
-		var identifier = scopeTokens[i].value;
-		if (!hop.call(scope, identifier) || scope[identifier] === Undeclared){
-			parentScopeTokens.push(scopeTokens[i]);
-			scopeChain.prototype[identifier] |= Undeclared;
-		}
-	}
-
-	scope = scopeChain.prototype;
-	scopeTokens = parentScopeTokens;
-	if (aliases) scopeAliases = scopeAliasesChain.prototype;
-}
-
-function scanFunctionDeclaration(exported){
-	var start = lookahead().start;
-	expectKeyword('function');
-	var identifier = lex().value;
-	scope[identifier] |= DeclaredFunction;
-	scope[identifier] |= exported;
-	var declarationToken = createToken(FunctionDeclaration, null, start);
-	if (scope === globalScope) scopeTokens.push(declarationToken);
-	scanFunction(null, identifier);
-	declarationToken.end = lookahead().start;
-}
-
-function scanFunctionExpression(aliases){
-	expectKeyword('function');
-	if (lookahead().type === Identifier)
-		scanFunction(aliases, lex().value);
-	else
-		scanFunction(aliases);
-}
-
-function scanBlock(){
-	expect('{');
-	scanStatements();
-	expect('}');
-}
-
-function scanDefineStatement(){
-	var id = null, deps = [];
-	expect('(');
-	module.amd = true;
-	if (lookahead().type === StringLiteral){
-		id = lex().value;
-		if (match(',')) lex();
-		if (matchKeyword('function')){
-			scanFunctionExpression(['require', 'exports', 'module']);
-			if (match(')')){
-				lex();
-				module.id = id;
-				return;
-			}
-		}
-		if (match(')')){ lex(); return; }
-	}
-	if (match('[')){
-		lex();
-		while (lookahead().type === StringLiteral){
-			deps.push(lex().value);
-			if (match(',')) lex();
-		}
-		if (match(']')){
-			lex();
-			if (match(',')){
-				lex();
-				if (matchKeyword('function')){
-					scanFunctionExpression(deps);
-					if (match(')')){
-						module.id = id;
-						for (var i = 0, l = deps.length; i < l; i++)
-							if (deps[i] !== 'require' &&
-							    deps[i] !== 'exports' &&
-							    deps[i] !== 'module')
-							    dependencies[deps[i]] |= Required;
-					}
-				} else {
-					scanExpression();
-				}
-			}
-		}
-	}
-	if (matchKeyword('function')){
-		scanFunctionExpression(['require', 'exports', 'module']);
-	} else if (!match(')')){
-		scanExpression();
-	}
-	while(match(',')){
-		lex();
-		if (match(')')) break;
-		scanExpression();
-	}
-	expect(')');
-}
-
-function scanRequireStatement(){
-	if (scope !== globalScope){
-		warn('nestedRequire', lookahead().lineNumber);
-		return;
-	}
-	var token = lex();
-	if (token.type === StringLiteral)
-	while (token.type !== EOF){
-		dependencies[token.value] |= Imported;
-		if (match(','))
-			lex();
-		if (lookahead().type !== StringLiteral)
-			break;
-		token = lex();
-	}
-}
-
-function scanExportsStatement(){
-	if (scope !== globalScope){
-		warn('nestedExport', lookahead().lineNumber);
-		return;
-	}
-	if (matchKeyword('var'))
-		scanVariableDeclarationList(Exported, DeclaredVariable);
-	else if (matchKeyword('function'))
-		scanFunctionDeclaration(Exported);
-	else if (lookahead().type === Identifier)
-		scanVariableDeclarationList(Exported, Undeclared);
-	else
-		warn('unknownExport', lookahead().lineNumber);
-}
-
-function scanStatement(){
-	var token = lookahead();
-	if (token.type === Identifier){
-		lex();
-		var identifier = token.value;
-		if (match(':')){
-			lex();
-			var declarationToken = {
-				type: 0,
-				start: token.start,
-				expressionStart: lookahead().start,
-				end: 0
-			};
-			if (identifier === 'require'){
-				if (scope === globalScope) scopeTokens.push(declarationToken);
-				declarationToken.type = RequireStatement;
-				scanRequireStatement();
-			}
-			if (identifier === 'exports'){
-				if (scope === globalScope) scopeTokens.push(declarationToken);
-				declarationToken.type = ExportsStatement;
-				scanExportsStatement();
-			}
-			declarationToken.end = lookahead().start;
-			if (match('{'))
-				scanBlock();
-		} else {
-			scanIdentifierExpression(token);
-		}
-	}
-
-	else if (matchKeyword('var'))
-		scanVariableDeclarationList(Undeclared, DeclaredVariable);
-
-	else if (matchKeyword('function'))
-		scanFunctionDeclaration();
-
-	else if (matchKeyword('catch'))
-		scanCatchStatement();
-
-	else if (matchBlockStart()){
-		lex();
-		if (match('{')) scanBlock();
-	}
-
-	else if (matchParenthesisBlockStart()){
-		if (matchKeyword('with'))
-			module.lexicalScope = false;
-		lex();
-		scanParenthesis();
-		if (match('{')) scanBlock();
-	}
-
-	else if (match(',') || match(';'))
-		lex();
-
-	else
-		scanExpression();	
-}
-
-function scanStatements(){
-	var token = lookahead();
-	while (token.type !== EOF && !match('}')){
-		scanStatement();
-		token = lookahead();
-	}
-}
-
-function scanProgram(){
-	var token = lookahead();
-	if (token.type === StringLiteral && token.value === 'use strict'){
-		lex();
-		if (match(';')) token = lex();
-		module.strict = token.end;
-	}
-	scanStatements();
-}
-
-function mapDependencies(dependency){
-	var type = dependencies[dependency];
-	if (type === Required){
-		module.requires.push(dependency);
-	} else if (type === Imported){
-		module.requires.push(dependency);
-		module.imports.push(dependency);
-	}
-}
-
-function mapScope(identifier){
-	var type = globalScope[identifier];
-	if (type === Exported){
-		warn('undeclaredExport', identifier);
-		module.expectedVariables.push(identifier);
-	}
-	if ((type & ExportedFunction) === ExportedFunction)
-		module.exportedFunctions.push(identifier);
-	else if ((type & ExportedVariable) === ExportedVariable)
-		module.exportedVariables.push(identifier);
-	else if (type === ExportedProperty)
-		module.exportedProperties.push(identifier);
-	else if (type === DeclaredFunction)
-		module.declaredFunctions.push(identifier);
-	else if (type === DeclaredVariable)
-		module.declaredVariables.push(identifier);
-	else if (type === Undeclared)
-		module.expectedVariables.push(identifier);
-}
-
-var enumFailures = ['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf'];
-for (var i = 0; i < enumFailures.length; i++){
-	var testObj = {};
-	testObj[enumFailures[i]] = 1;
-	for (var key in testObj)
-		enumFailures.splice(i--, 1);
-}
-
-function parse(sourceCode){
-	source = String(sourceCode);
-
-	var m = module = new ModuleDefinition(sourceCode);
-
-	// Reset
-	index = 0;
-	lineNumber = (source.length > 0) ? 1 : 0;
-	length = source.length;
-	scope = globalScope = m.lexicalEnvironment;
-	scopeAliases = {};
-	scopeTokens = m.tokens;
-	dependencies = {};
-	previousToken = buffer = null;
-
-	// IE fix
-	if (length > 0 && typeof source[0] === 'undefined'){
-		source = [];
-		for (var i = 0; i < length; i++)
-			source[i] = sourceCode.charAt(i);
-	}
-
-	// Scan
-	scanProgram();
-
-	// Convert maps to arrays
-
-	for (var key in globalScope) mapScope(key);
-
-	for (var dependency in dependencies) mapDependencies(dependency);
-
-	for (var i = 0, l = enumFailures.length; i < l; i++){
-		mapScope(enumFailures[i]);
-		mapDependencies(enumFailures[i]);
-	}
-
-	// Clean up
-	module = globalScope = scope = scopeAliases = dependencies = buffer = source = null;
-
-	return m;
-}
-
-}());;/*
+} ());;/*
 Go With the Flow
 Copyright (c) 2011 Jerome Etienne, http://jetienne.com
 
@@ -2142,7 +859,7 @@ var LOCAL_EASY_XDM = true;
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-(function(N,d,p,K,k,H){var b=this;var n=Math.floor(Math.random()*10000);var q=Function.prototype;var Q=/^((http.?:)\/\/([^:\/\s]+)(:\d+)*)/;var R=/[\-\w]+\/\.\.\//;var F=/([^:])\/\//g;var I="";var o={};var M=N.easyXDM;var U="easyXDM_";var E;var y=false;var i;var h;function C(X,Z){var Y=typeof X[Z];return Y=="function"||(!!(Y=="object"&&X[Z]))||Y=="unknown"}function u(X,Y){return !!(typeof(X[Y])=="object"&&X[Y])}function r(X){return Object.prototype.toString.call(X)==="[object Array]"}function c(){var Z="Shockwave Flash",ad="application/x-shockwave-flash";if(!t(navigator.plugins)&&typeof navigator.plugins[Z]=="object"){var ab=navigator.plugins[Z].description;if(ab&&!t(navigator.mimeTypes)&&navigator.mimeTypes[ad]&&navigator.mimeTypes[ad].enabledPlugin){i=ab.match(/\d+/g)}}if(!i){var Y;try{Y=new ActiveXObject("ShockwaveFlash.ShockwaveFlash");i=Array.prototype.slice.call(Y.GetVariable("$version").match(/(\d+),(\d+),(\d+),(\d+)/),1);Y=null}catch(ac){}}if(!i){return false}var X=parseInt(i[0],10),aa=parseInt(i[1],10);h=X>9&&aa>0;return true}var v,x;if(C(N,"addEventListener")){v=function(Z,X,Y){Z.addEventListener(X,Y,false)};x=function(Z,X,Y){Z.removeEventListener(X,Y,false)}}else{if(C(N,"attachEvent")){v=function(X,Z,Y){X.attachEvent("on"+Z,Y)};x=function(X,Z,Y){X.detachEvent("on"+Z,Y)}}else{throw new Error("Browser not supported")}}var W=false,J=[],L;if("readyState" in d){L=d.readyState;W=L=="complete"||(~navigator.userAgent.indexOf("AppleWebKit/")&&(L=="loaded"||L=="interactive"))}else{W=!!d.body}function s(){if(W){return}W=true;for(var X=0;X<J.length;X++){J[X]()}J.length=0}if(!W){if(C(N,"addEventListener")){v(d,"DOMContentLoaded",s)}else{v(d,"readystatechange",function(){if(d.readyState=="complete"){s()}});if(d.documentElement.doScroll&&N===top){var g=function(){if(W){return}try{d.documentElement.doScroll("left")}catch(X){K(g,1);return}s()};g()}}v(N,"load",s)}function G(Y,X){if(W){Y.call(X);return}J.push(function(){Y.call(X)})}function m(){var Z=parent;if(I!==""){for(var X=0,Y=I.split(".");X<Y.length;X++){Z=Z[Y[X]]}}return Z.easyXDM}function e(X){N.easyXDM=M;I=X;if(I){U="easyXDM_"+I.replace(".","_")+"_"}return o}function z(X){return X.match(Q)[3]}function f(X){return X.match(Q)[4]||""}function j(Z){var X=Z.toLowerCase().match(Q);var aa=X[2],ab=X[3],Y=X[4]||"";if((aa=="http:"&&Y==":80")||(aa=="https:"&&Y==":443")){Y=""}return aa+"//"+ab+Y}function B(X){X=X.replace(F,"$1/");if(!X.match(/^(http||https):\/\//)){var Y=(X.substring(0,1)==="/")?"":p.pathname;if(Y.substring(Y.length-1)!=="/"){Y=Y.substring(0,Y.lastIndexOf("/")+1)}X=p.protocol+"//"+p.host+Y+X}while(R.test(X)){X=X.replace(R,"")}return X}function P(X,aa){var ac="",Z=X.indexOf("#");if(Z!==-1){ac=X.substring(Z);X=X.substring(0,Z)}var ab=[];for(var Y in aa){if(aa.hasOwnProperty(Y)){ab.push(Y+"="+H(aa[Y]))}}return X+(y?"#":(X.indexOf("?")==-1?"?":"&"))+ab.join("&")+ac}var S=(function(X){X=X.substring(1).split("&");var Z={},aa,Y=X.length;while(Y--){aa=X[Y].split("=");Z[aa[0]]=k(aa[1])}return Z}(/xdm_e=/.test(p.search)?p.search:p.hash));function t(X){return typeof X==="undefined"}var O=function(){var Y={};var Z={a:[1,2,3]},X='{"a":[1,2,3]}';if(typeof JSON!="undefined"&&typeof JSON.stringify==="function"&&JSON.stringify(Z).replace((/\s/g),"")===X){return JSON}if(Object.toJSON){if(Object.toJSON(Z).replace((/\s/g),"")===X){Y.stringify=Object.toJSON}}if(typeof String.prototype.evalJSON==="function"){Z=X.evalJSON();if(Z.a&&Z.a.length===3&&Z.a[2]===3){Y.parse=function(aa){return aa.evalJSON()}}}if(Y.stringify&&Y.parse){O=function(){return Y};return Y}return null};function T(X,Y,Z){var ab;for(var aa in Y){if(Y.hasOwnProperty(aa)){if(aa in X){ab=Y[aa];if(typeof ab==="object"){T(X[aa],ab,Z)}else{if(!Z){X[aa]=Y[aa]}}}else{X[aa]=Y[aa]}}}return X}function a(){var Y=d.body.appendChild(d.createElement("form")),X=Y.appendChild(d.createElement("input"));X.name=U+"TEST"+n;E=X!==Y.elements[X.name];d.body.removeChild(Y)}function A(Y){if(t(E)){a()}var ac;if(E){ac=d.createElement('<iframe name="'+Y.props.name+'"/>')}else{ac=d.createElement("IFRAME");ac.name=Y.props.name}ac.id=ac.name=Y.props.name;delete Y.props.name;if(typeof Y.container=="string"){Y.container=d.getElementById(Y.container)}if(!Y.container){T(ac.style,{position:"absolute",top:"-2000px",left:"0px"});Y.container=d.body}var ab=Y.props.src;Y.props.src="javascript:false";T(ac,Y.props);ac.border=ac.frameBorder=0;ac.allowTransparency=true;Y.container.appendChild(ac);if(Y.onLoad){v(ac,"load",Y.onLoad)}if(Y.usePost){var aa=Y.container.appendChild(d.createElement("form")),X;aa.target=ac.name;aa.action=ab;aa.method="POST";if(typeof(Y.usePost)==="object"){for(var Z in Y.usePost){if(Y.usePost.hasOwnProperty(Z)){if(E){X=d.createElement('<input name="'+Z+'"/>')}else{X=d.createElement("INPUT");X.name=Z}X.value=Y.usePost[Z];aa.appendChild(X)}}}aa.submit();aa.parentNode.removeChild(aa)}else{ac.src=ab}Y.props.src=ab;return ac}function V(aa,Z){if(typeof aa=="string"){aa=[aa]}var Y,X=aa.length;while(X--){Y=aa[X];Y=new RegExp(Y.substr(0,1)=="^"?Y:("^"+Y.replace(/(\*)/g,".$1").replace(/\?/g,".")+"$"));if(Y.test(Z)){return true}}return false}function l(Z){var ae=Z.protocol,Y;Z.isHost=Z.isHost||t(S.xdm_p);y=Z.hash||false;if(!Z.props){Z.props={}}if(!Z.isHost){Z.channel=S.xdm_c.replace(/["'<>\\]/g,"");Z.secret=S.xdm_s;Z.remote=S.xdm_e.replace(/["'<>\\]/g,"");ae=S.xdm_p;if(Z.acl&&!V(Z.acl,Z.remote)){throw new Error("Access denied for "+Z.remote)}}else{Z.remote=B(Z.remote);Z.channel=Z.channel||"default"+n++;Z.secret=Math.random().toString(16).substring(2);if(t(ae)){if(j(p.href)==j(Z.remote)){ae="4"}else{if(C(N,"postMessage")||C(d,"postMessage")){ae="1"}else{if(Z.swf&&C(N,"ActiveXObject")&&c()){ae="6"}else{if(navigator.product==="Gecko"&&"frameElement" in N&&navigator.userAgent.indexOf("WebKit")==-1){ae="5"}else{if(Z.remoteHelper){ae="2"}else{ae="0"}}}}}}}Z.protocol=ae;switch(ae){case"0":T(Z,{interval:100,delay:2000,useResize:true,useParent:false,usePolling:false},true);if(Z.isHost){if(!Z.local){var ac=p.protocol+"//"+p.host,X=d.body.getElementsByTagName("img"),ad;var aa=X.length;while(aa--){ad=X[aa];if(ad.src.substring(0,ac.length)===ac){Z.local=ad.src;break}}if(!Z.local){Z.local=N}}var ab={xdm_c:Z.channel,xdm_p:0};if(Z.local===N){Z.usePolling=true;Z.useParent=true;Z.local=p.protocol+"//"+p.host+p.pathname+p.search;ab.xdm_e=Z.local;ab.xdm_pa=1}else{ab.xdm_e=B(Z.local)}if(Z.container){Z.useResize=false;ab.xdm_po=1}Z.remote=P(Z.remote,ab)}else{T(Z,{channel:S.xdm_c,remote:S.xdm_e,useParent:!t(S.xdm_pa),usePolling:!t(S.xdm_po),useResize:Z.useParent?false:Z.useResize})}Y=[new o.stack.HashTransport(Z),new o.stack.ReliableBehavior({}),new o.stack.QueueBehavior({encode:true,maxLength:4000-Z.remote.length}),new o.stack.VerifyBehavior({initiate:Z.isHost})];break;case"1":Y=[new o.stack.PostMessageTransport(Z)];break;case"2":Z.remoteHelper=B(Z.remoteHelper);Y=[new o.stack.NameTransport(Z),new o.stack.QueueBehavior(),new o.stack.VerifyBehavior({initiate:Z.isHost})];break;case"3":Y=[new o.stack.NixTransport(Z)];break;case"4":Y=[new o.stack.SameOriginTransport(Z)];break;case"5":Y=[new o.stack.FrameElementTransport(Z)];break;case"6":if(!i){c()}Y=[new o.stack.FlashTransport(Z)];break}Y.push(new o.stack.QueueBehavior({lazy:Z.lazy,remove:true}));return Y}function D(aa){var ab,Z={incoming:function(ad,ac){this.up.incoming(ad,ac)},outgoing:function(ac,ad){this.down.outgoing(ac,ad)},callback:function(ac){this.up.callback(ac)},init:function(){this.down.init()},destroy:function(){this.down.destroy()}};for(var Y=0,X=aa.length;Y<X;Y++){ab=aa[Y];T(ab,Z,true);if(Y!==0){ab.down=aa[Y-1]}if(Y!==X-1){ab.up=aa[Y+1]}}return ab}function w(X){X.up.down=X.down;X.down.up=X.up;X.up=X.down=null}T(o,{version:"2.4.17.1",query:S,stack:{},apply:T,getJSONObject:O,whenReady:G,noConflict:e});o.DomHelper={on:v,un:x,requiresJSON:function(X){if(!u(N,"JSON")){d.write('<script type="text/javascript" src="'+X+'"><\/script>')}}};(function(){var X={};o.Fn={set:function(Y,Z){X[Y]=Z},get:function(Z,Y){var aa=X[Z];if(Y){delete X[Z]}return aa}}}());o.Socket=function(Y){var X=D(l(Y).concat([{incoming:function(ab,aa){Y.onMessage(ab,aa)},callback:function(aa){if(Y.onReady){Y.onReady(aa)}}}])),Z=j(Y.remote);this.origin=j(Y.remote);this.destroy=function(){X.destroy()};this.postMessage=function(aa){X.outgoing(aa,Z)};X.init()};o.Rpc=function(Z,Y){if(Y.local){for(var ab in Y.local){if(Y.local.hasOwnProperty(ab)){var aa=Y.local[ab];if(typeof aa==="function"){Y.local[ab]={method:aa}}}}}var X=D(l(Z).concat([new o.stack.RpcBehavior(this,Y),{callback:function(ac){if(Z.onReady){Z.onReady(ac)}}}]));this.origin=j(Z.remote);this.destroy=function(){X.destroy()};X.init()};o.stack.SameOriginTransport=function(Y){var Z,ab,aa,X;return(Z={outgoing:function(ad,ae,ac){aa(ad);if(ac){ac()}},destroy:function(){if(ab){ab.parentNode.removeChild(ab);ab=null}},onDOMReady:function(){X=j(Y.remote);if(Y.isHost){T(Y.props,{src:P(Y.remote,{xdm_e:p.protocol+"//"+p.host+p.pathname,xdm_c:Y.channel,xdm_p:4}),name:U+Y.channel+"_provider"});ab=A(Y);o.Fn.set(Y.channel,function(ac){aa=ac;K(function(){Z.up.callback(true)},0);return function(ad){Z.up.incoming(ad,X)}})}else{aa=m().Fn.get(Y.channel,true)(function(ac){Z.up.incoming(ac,X)});K(function(){Z.up.callback(true)},0)}},init:function(){G(Z.onDOMReady,Z)}})};o.stack.FlashTransport=function(aa){var ac,X,ab,ad,Y,ae;function af(ah,ag){K(function(){ac.up.incoming(ah,ad)},0)}function Z(ah){var ag=aa.swf+"?host="+aa.isHost;var aj="easyXDM_swf_"+Math.floor(Math.random()*10000);o.Fn.set("flash_loaded"+ah.replace(/[\-.]/g,"_"),function(){o.stack.FlashTransport[ah].swf=Y=ae.firstChild;var ak=o.stack.FlashTransport[ah].queue;for(var al=0;al<ak.length;al++){ak[al]()}ak.length=0});if(aa.swfContainer){ae=(typeof aa.swfContainer=="string")?d.getElementById(aa.swfContainer):aa.swfContainer}else{ae=d.createElement("div");T(ae.style,h&&aa.swfNoThrottle?{height:"20px",width:"20px",position:"fixed",right:0,top:0}:{height:"1px",width:"1px",position:"absolute",overflow:"hidden",right:0,top:0});d.body.appendChild(ae)}var ai="callback=flash_loaded"+ah.replace(/[\-.]/g,"_")+"&proto="+b.location.protocol+"&domain="+z(b.location.href)+"&port="+f(b.location.href)+"&ns="+I;ae.innerHTML="<object height='20' width='20' type='application/x-shockwave-flash' id='"+aj+"' data='"+ag+"'><param name='allowScriptAccess' value='always'></param><param name='wmode' value='transparent'><param name='movie' value='"+ag+"'></param><param name='flashvars' value='"+ai+"'></param><embed type='application/x-shockwave-flash' FlashVars='"+ai+"' allowScriptAccess='always' wmode='transparent' src='"+ag+"' height='1' width='1'></embed></object>"}return(ac={outgoing:function(ah,ai,ag){Y.postMessage(aa.channel,ah.toString());if(ag){ag()}},destroy:function(){try{Y.destroyChannel(aa.channel)}catch(ag){}Y=null;if(X){X.parentNode.removeChild(X);X=null}},onDOMReady:function(){ad=aa.remote;o.Fn.set("flash_"+aa.channel+"_init",function(){K(function(){ac.up.callback(true)})});o.Fn.set("flash_"+aa.channel+"_onMessage",af);aa.swf=B(aa.swf);var ah=z(aa.swf);var ag=function(){o.stack.FlashTransport[ah].init=true;Y=o.stack.FlashTransport[ah].swf;Y.createChannel(aa.channel,aa.secret,j(aa.remote),aa.isHost);if(aa.isHost){if(h&&aa.swfNoThrottle){T(aa.props,{position:"fixed",right:0,top:0,height:"20px",width:"20px"})}T(aa.props,{src:P(aa.remote,{xdm_e:j(p.href),xdm_c:aa.channel,xdm_p:6,xdm_s:aa.secret}),name:U+aa.channel+"_provider"});X=A(aa)}};if(o.stack.FlashTransport[ah]&&o.stack.FlashTransport[ah].init){ag()}else{if(!o.stack.FlashTransport[ah]){o.stack.FlashTransport[ah]={queue:[ag]};Z(ah)}else{o.stack.FlashTransport[ah].queue.push(ag)}}},init:function(){G(ac.onDOMReady,ac)}})};o.stack.PostMessageTransport=function(aa){var ac,ad,Y,Z;function X(ae){if(ae.origin){return j(ae.origin)}if(ae.uri){return j(ae.uri)}if(ae.domain){return p.protocol+"//"+ae.domain}throw"Unable to retrieve the origin of the event"}function ab(af){var ae=X(af);if(ae==Z&&af.data.substring(0,aa.channel.length+1)==aa.channel+" "){ac.up.incoming(af.data.substring(aa.channel.length+1),ae)}}return(ac={outgoing:function(af,ag,ae){Y.postMessage(aa.channel+" "+af,ag||Z);if(ae){ae()}},destroy:function(){x(N,"message",ab);if(ad){Y=null;ad.parentNode.removeChild(ad);ad=null}},onDOMReady:function(){Z=j(aa.remote);if(aa.isHost){var ae=function(af){if(af.data==aa.channel+"-ready"){Y=("postMessage" in ad.contentWindow)?ad.contentWindow:ad.contentWindow.document;x(N,"message",ae);v(N,"message",ab);K(function(){ac.up.callback(true)},0)}};v(N,"message",ae);T(aa.props,{src:P(aa.remote,{xdm_e:j(p.href),xdm_c:aa.channel,xdm_p:1}),name:U+aa.channel+"_provider"});ad=A(aa)}else{v(N,"message",ab);Y=("postMessage" in N.parent)?N.parent:N.parent.document;Y.postMessage(aa.channel+"-ready",Z);K(function(){ac.up.callback(true)},0)}},init:function(){G(ac.onDOMReady,ac)}})};o.stack.FrameElementTransport=function(Y){var Z,ab,aa,X;return(Z={outgoing:function(ad,ae,ac){aa.call(this,ad);if(ac){ac()}},destroy:function(){if(ab){ab.parentNode.removeChild(ab);ab=null}},onDOMReady:function(){X=j(Y.remote);if(Y.isHost){T(Y.props,{src:P(Y.remote,{xdm_e:j(p.href),xdm_c:Y.channel,xdm_p:5}),name:U+Y.channel+"_provider"});ab=A(Y);ab.fn=function(ac){delete ab.fn;aa=ac;K(function(){Z.up.callback(true)},0);return function(ad){Z.up.incoming(ad,X)}}}else{if(d.referrer&&j(d.referrer)!=S.xdm_e){N.top.location=S.xdm_e}aa=N.frameElement.fn(function(ac){Z.up.incoming(ac,X)});Z.up.callback(true)}},init:function(){G(Z.onDOMReady,Z)}})};o.stack.NameTransport=function(ab){var ac;var ae,ai,aa,ag,ah,Y,X;function af(al){var ak=ab.remoteHelper+(ae?"#_3":"#_2")+ab.channel;ai.contentWindow.sendMessage(al,ak)}function ad(){if(ae){if(++ag===2||!ae){ac.up.callback(true)}}else{af("ready");ac.up.callback(true)}}function aj(ak){ac.up.incoming(ak,Y)}function Z(){if(ah){K(function(){ah(true)},0)}}return(ac={outgoing:function(al,am,ak){ah=ak;af(al)},destroy:function(){ai.parentNode.removeChild(ai);ai=null;if(ae){aa.parentNode.removeChild(aa);aa=null}},onDOMReady:function(){ae=ab.isHost;ag=0;Y=j(ab.remote);ab.local=B(ab.local);if(ae){o.Fn.set(ab.channel,function(al){if(ae&&al==="ready"){o.Fn.set(ab.channel,aj);ad()}});X=P(ab.remote,{xdm_e:ab.local,xdm_c:ab.channel,xdm_p:2});T(ab.props,{src:X+"#"+ab.channel,name:U+ab.channel+"_provider"});aa=A(ab)}else{ab.remoteHelper=ab.remote;o.Fn.set(ab.channel,aj)}var ak=function(){var al=ai||this;x(al,"load",ak);o.Fn.set(ab.channel+"_load",Z);(function am(){if(typeof al.contentWindow.sendMessage=="function"){ad()}else{K(am,50)}}())};ai=A({props:{src:ab.local+"#_4"+ab.channel},onLoad:ak})},init:function(){G(ac.onDOMReady,ac)}})};o.stack.HashTransport=function(Z){var ac;var ah=this,af,aa,X,ad,am,ab,al;var ag,Y;function ak(ao){if(!al){return}var an=Z.remote+"#"+(am++)+"_"+ao;((af||!ag)?al.contentWindow:al).location=an}function ae(an){ad=an;ac.up.incoming(ad.substring(ad.indexOf("_")+1),Y)}function aj(){if(!ab){return}var an=ab.location.href,ap="",ao=an.indexOf("#");if(ao!=-1){ap=an.substring(ao)}if(ap&&ap!=ad){ae(ap)}}function ai(){aa=setInterval(aj,X)}return(ac={outgoing:function(an,ao){ak(an)},destroy:function(){N.clearInterval(aa);if(af||!ag){al.parentNode.removeChild(al)}al=null},onDOMReady:function(){af=Z.isHost;X=Z.interval;ad="#"+Z.channel;am=0;ag=Z.useParent;Y=j(Z.remote);if(af){T(Z.props,{src:Z.remote,name:U+Z.channel+"_provider"});if(ag){Z.onLoad=function(){ab=N;ai();ac.up.callback(true)}}else{var ap=0,an=Z.delay/50;(function ao(){if(++ap>an){throw new Error("Unable to reference listenerwindow")}try{ab=al.contentWindow.frames[U+Z.channel+"_consumer"]}catch(aq){}if(ab){ai();ac.up.callback(true)}else{K(ao,50)}}())}al=A(Z)}else{ab=N;ai();if(ag){al=parent;ac.up.callback(true)}else{T(Z,{props:{src:Z.remote+"#"+Z.channel+new Date(),name:U+Z.channel+"_consumer"},onLoad:function(){ac.up.callback(true)}});al=A(Z)}}},init:function(){G(ac.onDOMReady,ac)}})};o.stack.ReliableBehavior=function(Y){var aa,ac;var ab=0,X=0,Z="";return(aa={incoming:function(af,ad){var ae=af.indexOf("_"),ag=af.substring(0,ae).split(",");af=af.substring(ae+1);if(ag[0]==ab){Z="";if(ac){ac(true);ac=null}}if(af.length>0){aa.down.outgoing(ag[1]+","+ab+"_"+Z,ad);if(X!=ag[1]){X=ag[1];aa.up.incoming(af,ad)}}},outgoing:function(af,ad,ae){Z=af;ac=ae;aa.down.outgoing(X+","+(++ab)+"_"+af,ad)}})};o.stack.QueueBehavior=function(Z){var ac,ad=[],ag=true,aa="",af,X=0,Y=false,ab=false;function ae(){if(Z.remove&&ad.length===0){w(ac);return}if(ag||ad.length===0||af){return}ag=true;var ah=ad.shift();ac.down.outgoing(ah.data,ah.origin,function(ai){ag=false;if(ah.callback){K(function(){ah.callback(ai)},0)}ae()})}return(ac={init:function(){if(t(Z)){Z={}}if(Z.maxLength){X=Z.maxLength;ab=true}if(Z.lazy){Y=true}else{ac.down.init()}},callback:function(ai){ag=false;var ah=ac.up;ae();ah.callback(ai)},incoming:function(ak,ai){if(ab){var aj=ak.indexOf("_"),ah=parseInt(ak.substring(0,aj),10);aa+=ak.substring(aj+1);if(ah===0){if(Z.encode){aa=k(aa)}ac.up.incoming(aa,ai);aa=""}}else{ac.up.incoming(ak,ai)}},outgoing:function(al,ai,ak){if(Z.encode){al=H(al)}var ah=[],aj;if(ab){while(al.length!==0){aj=al.substring(0,X);al=al.substring(aj.length);ah.push(aj)}while((aj=ah.shift())){ad.push({data:ah.length+"_"+aj,origin:ai,callback:ah.length===0?ak:null})}}else{ad.push({data:al,origin:ai,callback:ak})}if(Y){ac.down.init()}else{ae()}},destroy:function(){af=true;ac.down.destroy()}})};o.stack.VerifyBehavior=function(ab){var ac,aa,Y,Z=false;function X(){aa=Math.random().toString(16).substring(2);ac.down.outgoing(aa)}return(ac={incoming:function(af,ad){var ae=af.indexOf("_");if(ae===-1){if(af===aa){ac.up.callback(true)}else{if(!Y){Y=af;if(!ab.initiate){X()}ac.down.outgoing(af)}}}else{if(af.substring(0,ae)===Y){ac.up.incoming(af.substring(ae+1),ad)}}},outgoing:function(af,ad,ae){ac.down.outgoing(aa+"_"+af,ad,ae)},callback:function(ad){if(ab.initiate){X()}}})};o.stack.RpcBehavior=function(ad,Y){var aa,af=Y.serializer||O();var ae=0,ac={};function X(ag){ag.jsonrpc="2.0";aa.down.outgoing(af.stringify(ag))}function ab(ag,ai){var ah=Array.prototype.slice;return function(){var aj=arguments.length,al,ak={method:ai};if(aj>0&&typeof arguments[aj-1]==="function"){if(aj>1&&typeof arguments[aj-2]==="function"){al={success:arguments[aj-2],error:arguments[aj-1]};ak.params=ah.call(arguments,0,aj-2)}else{al={success:arguments[aj-1]};ak.params=ah.call(arguments,0,aj-1)}ac[""+(++ae)]=al;ak.id=ae}else{ak.params=ah.call(arguments,0)}if(ag.namedParams&&ak.params.length===1){ak.params=ak.params[0]}X(ak)}}function Z(an,am,ai,al){if(!ai){if(am){X({id:am,error:{code:-32601,message:"Procedure not found."}})}return}var ak,ah;if(am){ak=function(ao){ak=q;X({id:am,result:ao})};ah=function(ao,ap){ah=q;var aq={id:am,error:{code:-32099,message:ao}};if(ap){aq.error.data=ap}X(aq)}}else{ak=ah=q}if(!r(al)){al=[al]}try{var ag=ai.method.apply(ai.scope,al.concat([ak,ah]));if(!t(ag)){ak(ag)}}catch(aj){ah(aj.message)}}return(aa={incoming:function(ah,ag){var ai=af.parse(ah);if(ai.method){if(Y.handle){Y.handle(ai,X)}else{Z(ai.method,ai.id,Y.local[ai.method],ai.params)}}else{var aj=ac[ai.id];if(ai.error){if(aj.error){aj.error(ai.error)}}else{if(aj.success){aj.success(ai.result)}}delete ac[ai.id]}},init:function(){if(Y.remote){for(var ag in Y.remote){if(Y.remote.hasOwnProperty(ag)){ad[ag]=ab(Y.remote[ag],ag)}}}aa.down.init()},destroy:function(){for(var ag in Y.remote){if(Y.remote.hasOwnProperty(ag)&&ad.hasOwnProperty(ag)){delete ad[ag]}}aa.down.destroy()}})};b.easyXDM=o})(window,document,location,window.setTimeout,decodeURIComponent,encodeURIComponent);;/**
+(function(N,d,p,K,k,H){var b=this;var n=Math.floor(Math.random()*10000);var q=Function.prototype;var Q=/^((http.?:)\/\/([^:\/\s]+)(:\d+)*)/;var R=/[\-\w]+\/\.\.\//;var F=/([^:])\/\//g;var I="";var o={};var M=N.easyXDM;var U="easyXDM_";var E;var y=false;var i;var h;function C(X,Z){var Y=typeof X[Z];return Y=="function"||(!!(Y=="object"&&X[Z]))||Y=="unknown"}function u(X,Y){return !!(typeof(X[Y])=="object"&&X[Y])}function r(X){return Object.prototype.toString.call(X)==="[object Array]"}function c(){var Z="Shockwave Flash",ad="application/x-shockwave-flash";if(!t(navigator.plugins)&&typeof navigator.plugins[Z]=="object"){var ab=navigator.plugins[Z].description;if(ab&&!t(navigator.mimeTypes)&&navigator.mimeTypes[ad]&&navigator.mimeTypes[ad].enabledPlugin){i=ab.match(/\d+/g)}}if(!i){var Y;try{Y=new ActiveXObject("ShockwaveFlash.ShockwaveFlash");i=Array.prototype.slice.call(Y.GetVariable("$version").match(/(\d+),(\d+),(\d+),(\d+)/),1);Y=null}catch(ac){}}if(!i){return false}var X=parseInt(i[0],10),aa=parseInt(i[1],10);h=X>9&&aa>0;return true}var v,x;if(C(N,"addEventListener")){v=function(Z,X,Y){Z.addEventListener(X,Y,false)};x=function(Z,X,Y){Z.removeEventListener(X,Y,false)}}else{if(C(N,"attachEvent")){v=function(X,Z,Y){X.attachEvent("on"+Z,Y)};x=function(X,Z,Y){X.detachEvent("on"+Z,Y)}}else{throw new Error("Browser not supported")}}var W=false,J=[],L;if("readyState" in d){L=d.readyState;W=L=="complete"||(~navigator.userAgent.indexOf("AppleWebKit/")&&(L=="loaded"||L=="interactive"))}else{W=!!d.body}function s(){if(W){return}W=true;for(var X=0;X<J.length;X++){J[X]()}J.length=0}if(!W){if(C(N,"addEventListener")){v(d,"DOMContentLoaded",s)}else{v(d,"readystatechange",function(){if(d.readyState=="complete"){s()}});if(d.documentElement.doScroll&&N===top){var g=function(){if(W){return}try{d.documentElement.doScroll("left")}catch(X){K(g,1);return}s()};g()}}v(N,"load",s)}function G(Y,X){if(W){Y.call(X);return}J.push(function(){Y.call(X)})}function m(){var Z=parent;if(I!==""){for(var X=0,Y=I.split(".");X<Y.length;X++){Z=Z[Y[X]]}}return Z.easyXDM}function e(X){N.easyXDM=M;I=X;if(I){U="easyXDM_"+I.replace(".","_")+"_"}return o}function z(X){return X.match(Q)[3]}function f(X){return X.match(Q)[4]||""}function j(Z){var X=Z.toLowerCase().match(Q);var aa=X[2],ab=X[3],Y=X[4]||"";if((aa=="http:"&&Y==":80")||(aa=="https:"&&Y==":443")){Y=""}return aa+"//"+ab+Y}function B(X){X=X.replace(F,"$1/");if(!X.match(/^(http||https):\/\//)){var Y=(X.substring(0,1)==="/")?"":p.pathname;if(Y.substring(Y.length-1)!=="/"){Y=Y.substring(0,Y.lastIndexOf("/")+1)}X=p.protocol+"//"+p.host+Y+X}while(R.test(X)){X=X.replace(R,"")}return X}function P(X,aa){var ac="",Z=X.indexOf("#");if(Z!==-1){ac=X.substring(Z);X=X.substring(0,Z)}var ab=[];for(var Y in aa){if(aa.hasOwnProperty(Y)){ab.push(Y+"="+H(aa[Y]))}}return X+(y?"#":(X.indexOf("?")==-1?"?":"&"))+ab.join("&")+ac}var S=(function(X){X=X.substring(1).split("&");var Z={},aa,Y=X.length;while(Y--){aa=X[Y].split("=");Z[aa[0]]=k(aa[1])}return Z}(/xdm_e=/.test(p.search)?p.search:p.hash));function t(X){return typeof X==="undefined"}var O=function(){var Y={};var Z={a:[1,2,3]},X='{"a":[1,2,3]}';if(typeof JSON!="undefined"&&typeof JSON.stringify==="function"&&JSON.stringify(Z).replace((/\s/g),"")===X){return JSON}if(Object.toJSON){if(Object.toJSON(Z).replace((/\s/g),"")===X){Y.stringify=Object.toJSON}}if(typeof String.prototype.evalJSON==="function"){Z=X.evalJSON();if(Z.a&&Z.a.length===3&&Z.a[2]===3){Y.parse=function(aa){return aa.evalJSON()}}}if(Y.stringify&&Y.parse){O=function(){return Y};return Y}return null};function T(X,Y,Z){var ab;for(var aa in Y){if(Y.hasOwnProperty(aa)){if(aa in X){ab=Y[aa];if(typeof ab==="object"){T(X[aa],ab,Z)}else{if(!Z){X[aa]=Y[aa]}}}else{X[aa]=Y[aa]}}}return X}function a(){var Y=d.body.appendChild(d.createElement("form")),X=Y.appendChild(d.createElement("input"));X.name=U+"TEST"+n;E=X!==Y.elements[X.name];d.body.removeChild(Y)}function A(Y){if(t(E)){a()}var ac;if(E){ac=d.createElement('<iframe name="'+Y.props.name+'"/>')}else{ac=d.createElement("IFRAME");ac.name=Y.props.name}ac.id=ac.name=Y.props.name;delete Y.props.name;if(typeof Y.container=="string"){Y.container=d.getElementById(Y.container)}if(!Y.container){T(ac.style,{position:"absolute",top:"-2000px",left:"0px"});Y.container=d.body}var ab=Y.props.src;Y.props.src="javascript:false";T(ac,Y.props);ac.border=ac.frameBorder=0;ac.allowTransparency=true;Y.container.appendChild(ac);if(Y.onLoad){v(ac,"load",Y.onLoad)}if(Y.usePost){var aa=Y.container.appendChild(d.createElement("form")),X;aa.target=ac.name;aa.action=ab;aa.method="POST";if(typeof(Y.usePost)==="object"){for(var Z in Y.usePost){if(Y.usePost.hasOwnProperty(Z)){if(E){X=d.createElement('<input name="'+Z+'"/>')}else{X=d.createElement("INPUT");X.name=Z}X.value=Y.usePost[Z];aa.appendChild(X)}}}aa.submit();aa.parentNode.removeChild(aa)}else{ac.src=ab}Y.props.src=ab;return ac}function V(aa,Z){if(typeof aa=="string"){aa=[aa]}var Y,X=aa.length;while(X--){Y=aa[X];Y=new RegExp(Y.substr(0,1)=="^"?Y:("^"+Y.replace(/(\*)/g,".$1").replace(/\?/g,".")+"$"));if(Y.test(Z)){return true}}return false}function l(Z){var ae=Z.protocol,Y;Z.isHost=Z.isHost||t(S.xdm_p);y=Z.hash||false;if(!Z.props){Z.props={}}if(!Z.isHost){Z.channel=S.xdm_c.replace(/["'<>\\]/g,"");Z.secret=S.xdm_s;Z.remote=S.xdm_e.replace(/["'<>\\]/g,"");ae=S.xdm_p;if(Z.acl&&!V(Z.acl,Z.remote)){throw new Error("Access denied for "+Z.remote)}}else{Z.remote=B(Z.remote);Z.channel=Z.channel||"default"+n++;Z.secret=Math.random().toString(16).substring(2);if(t(ae)){if(j(p.href)==j(Z.remote)){ae="4"}else{if(C(N,"postMessage")||C(d,"postMessage")){ae="1"}else{if(Z.swf&&C(N,"ActiveXObject")&&c()){ae="6"}else{if(navigator.product==="Gecko"&&"frameElement" in N&&navigator.userAgent.indexOf("WebKit")==-1){ae="5"}else{if(Z.remoteHelper){ae="2"}else{ae="0"}}}}}}}Z.protocol=ae;switch(ae){case"0":T(Z,{interval:100,delay:2000,useResize:true,useParent:false,usePolling:false},true);if(Z.isHost){if(!Z.local){var ac=p.protocol+"//"+p.host,X=d.body.getElementsByTagName("img"),ad;var aa=X.length;while(aa--){ad=X[aa];if(ad.src.substring(0,ac.length)===ac){Z.local=ad.src;break}}if(!Z.local){Z.local=N}}var ab={xdm_c:Z.channel,xdm_p:0};if(Z.local===N){Z.usePolling=true;Z.useParent=true;Z.local=p.protocol+"//"+p.host+p.pathname+p.search;ab.xdm_e=Z.local;ab.xdm_pa=1}else{ab.xdm_e=B(Z.local)}if(Z.container){Z.useResize=false;ab.xdm_po=1}Z.remote=P(Z.remote,ab)}else{T(Z,{channel:S.xdm_c,remote:S.xdm_e,useParent:!t(S.xdm_pa),usePolling:!t(S.xdm_po),useResize:Z.useParent?false:Z.useResize})}Y=[new o.stack.HashTransport(Z),new o.stack.ReliableBehavior({}),new o.stack.QueueBehavior({encode:true,maxLength:4000-Z.remote.length}),new o.stack.VerifyBehavior({initiate:Z.isHost})];break;case"1":Y=[new o.stack.PostMessageTransport(Z)];break;case"2":Z.remoteHelper=B(Z.remoteHelper);Y=[new o.stack.NameTransport(Z),new o.stack.QueueBehavior(),new o.stack.VerifyBehavior({initiate:Z.isHost})];break;case"3":Y=[new o.stack.NixTransport(Z)];break;case"4":Y=[new o.stack.SameOriginTransport(Z)];break;case"5":Y=[new o.stack.FrameElementTransport(Z)];break;case"6":if(!i){c()}Y=[new o.stack.FlashTransport(Z)];break}Y.push(new o.stack.QueueBehavior({lazy:Z.lazy,remove:true}));return Y}function D(aa){var ab,Z={incoming:function(ad,ac){this.up.incoming(ad,ac)},outgoing:function(ac,ad){this.down.outgoing(ac,ad)},callback:function(ac){this.up.callback(ac)},init:function(){this.down.init()},destroy:function(){this.down.destroy()}};for(var Y=0,X=aa.length;Y<X;Y++){ab=aa[Y];T(ab,Z,true);if(Y!==0){ab.down=aa[Y-1]}if(Y!==X-1){ab.up=aa[Y+1]}}return ab}function w(X){X.up.down=X.down;X.down.up=X.up;X.up=X.down=null}T(o,{version:"2.4.18.0",query:S,stack:{},apply:T,getJSONObject:O,whenReady:G,noConflict:e});o.DomHelper={on:v,un:x,requiresJSON:function(X){if(!u(N,"JSON")){d.write('<script type="text/javascript" src="'+X+'"><\/script>')}}};(function(){var X={};o.Fn={set:function(Y,Z){X[Y]=Z},get:function(Z,Y){var aa=X[Z];if(Y){delete X[Z]}return aa}}}());o.Socket=function(Y){var X=D(l(Y).concat([{incoming:function(ab,aa){Y.onMessage(ab,aa)},callback:function(aa){if(Y.onReady){Y.onReady(aa)}}}])),Z=j(Y.remote);this.origin=j(Y.remote);this.destroy=function(){X.destroy()};this.postMessage=function(aa){X.outgoing(aa,Z)};X.init()};o.Rpc=function(Z,Y){if(Y.local){for(var ab in Y.local){if(Y.local.hasOwnProperty(ab)){var aa=Y.local[ab];if(typeof aa==="function"){Y.local[ab]={method:aa}}}}}var X=D(l(Z).concat([new o.stack.RpcBehavior(this,Y),{callback:function(ac){if(Z.onReady){Z.onReady(ac)}}}]));this.origin=j(Z.remote);this.destroy=function(){X.destroy()};X.init()};o.stack.SameOriginTransport=function(Y){var Z,ab,aa,X;return(Z={outgoing:function(ad,ae,ac){aa(ad);if(ac){ac()}},destroy:function(){if(ab){ab.parentNode.removeChild(ab);ab=null}},onDOMReady:function(){X=j(Y.remote);if(Y.isHost){T(Y.props,{src:P(Y.remote,{xdm_e:p.protocol+"//"+p.host+p.pathname,xdm_c:Y.channel,xdm_p:4}),name:U+Y.channel+"_provider"});ab=A(Y);o.Fn.set(Y.channel,function(ac){aa=ac;K(function(){Z.up.callback(true)},0);return function(ad){Z.up.incoming(ad,X)}})}else{aa=m().Fn.get(Y.channel,true)(function(ac){Z.up.incoming(ac,X)});K(function(){Z.up.callback(true)},0)}},init:function(){G(Z.onDOMReady,Z)}})};o.stack.FlashTransport=function(aa){var ac,X,ab,ad,Y,ae;function af(ah,ag){K(function(){ac.up.incoming(ah,ad)},0)}function Z(ah){var ag=aa.swf+"?host="+aa.isHost;var aj="easyXDM_swf_"+Math.floor(Math.random()*10000);o.Fn.set("flash_loaded"+ah.replace(/[\-.]/g,"_"),function(){o.stack.FlashTransport[ah].swf=Y=ae.firstChild;var ak=o.stack.FlashTransport[ah].queue;for(var al=0;al<ak.length;al++){ak[al]()}ak.length=0});if(aa.swfContainer){ae=(typeof aa.swfContainer=="string")?d.getElementById(aa.swfContainer):aa.swfContainer}else{ae=d.createElement("div");T(ae.style,h&&aa.swfNoThrottle?{height:"20px",width:"20px",position:"fixed",right:0,top:0}:{height:"1px",width:"1px",position:"absolute",overflow:"hidden",right:0,top:0});d.body.appendChild(ae)}var ai="callback=flash_loaded"+H(ah.replace(/[\-.]/g,"_"))+"&proto="+b.location.protocol+"&domain="+H(z(b.location.href))+"&port="+H(f(b.location.href))+"&ns="+H(I);ae.innerHTML="<object height='20' width='20' type='application/x-shockwave-flash' id='"+aj+"' data='"+ag+"'><param name='allowScriptAccess' value='always'></param><param name='wmode' value='transparent'><param name='movie' value='"+ag+"'></param><param name='flashvars' value='"+ai+"'></param><embed type='application/x-shockwave-flash' FlashVars='"+ai+"' allowScriptAccess='always' wmode='transparent' src='"+ag+"' height='1' width='1'></embed></object>"}return(ac={outgoing:function(ah,ai,ag){Y.postMessage(aa.channel,ah.toString());if(ag){ag()}},destroy:function(){try{Y.destroyChannel(aa.channel)}catch(ag){}Y=null;if(X){X.parentNode.removeChild(X);X=null}},onDOMReady:function(){ad=aa.remote;o.Fn.set("flash_"+aa.channel+"_init",function(){K(function(){ac.up.callback(true)})});o.Fn.set("flash_"+aa.channel+"_onMessage",af);aa.swf=B(aa.swf);var ah=z(aa.swf);var ag=function(){o.stack.FlashTransport[ah].init=true;Y=o.stack.FlashTransport[ah].swf;Y.createChannel(aa.channel,aa.secret,j(aa.remote),aa.isHost);if(aa.isHost){if(h&&aa.swfNoThrottle){T(aa.props,{position:"fixed",right:0,top:0,height:"20px",width:"20px"})}T(aa.props,{src:P(aa.remote,{xdm_e:j(p.href),xdm_c:aa.channel,xdm_p:6,xdm_s:aa.secret}),name:U+aa.channel+"_provider"});X=A(aa)}};if(o.stack.FlashTransport[ah]&&o.stack.FlashTransport[ah].init){ag()}else{if(!o.stack.FlashTransport[ah]){o.stack.FlashTransport[ah]={queue:[ag]};Z(ah)}else{o.stack.FlashTransport[ah].queue.push(ag)}}},init:function(){G(ac.onDOMReady,ac)}})};o.stack.PostMessageTransport=function(aa){var ac,ad,Y,Z;function X(ae){if(ae.origin){return j(ae.origin)}if(ae.uri){return j(ae.uri)}if(ae.domain){return p.protocol+"//"+ae.domain}throw"Unable to retrieve the origin of the event"}function ab(af){var ae=X(af);if(ae==Z&&af.data.substring(0,aa.channel.length+1)==aa.channel+" "){ac.up.incoming(af.data.substring(aa.channel.length+1),ae)}}return(ac={outgoing:function(af,ag,ae){Y.postMessage(aa.channel+" "+af,ag||Z);if(ae){ae()}},destroy:function(){x(N,"message",ab);if(ad){Y=null;ad.parentNode.removeChild(ad);ad=null}},onDOMReady:function(){Z=j(aa.remote);if(aa.isHost){var ae=function(af){if(af.data==aa.channel+"-ready"){Y=("postMessage" in ad.contentWindow)?ad.contentWindow:ad.contentWindow.document;x(N,"message",ae);v(N,"message",ab);K(function(){ac.up.callback(true)},0)}};v(N,"message",ae);T(aa.props,{src:P(aa.remote,{xdm_e:j(p.href),xdm_c:aa.channel,xdm_p:1}),name:U+aa.channel+"_provider"});ad=A(aa)}else{v(N,"message",ab);Y=("postMessage" in N.parent)?N.parent:N.parent.document;Y.postMessage(aa.channel+"-ready",Z);K(function(){ac.up.callback(true)},0)}},init:function(){G(ac.onDOMReady,ac)}})};o.stack.FrameElementTransport=function(Y){var Z,ab,aa,X;return(Z={outgoing:function(ad,ae,ac){aa.call(this,ad);if(ac){ac()}},destroy:function(){if(ab){ab.parentNode.removeChild(ab);ab=null}},onDOMReady:function(){X=j(Y.remote);if(Y.isHost){T(Y.props,{src:P(Y.remote,{xdm_e:j(p.href),xdm_c:Y.channel,xdm_p:5}),name:U+Y.channel+"_provider"});ab=A(Y);ab.fn=function(ac){delete ab.fn;aa=ac;K(function(){Z.up.callback(true)},0);return function(ad){Z.up.incoming(ad,X)}}}else{if(d.referrer&&j(d.referrer)!=S.xdm_e){N.top.location=S.xdm_e}aa=N.frameElement.fn(function(ac){Z.up.incoming(ac,X)});Z.up.callback(true)}},init:function(){G(Z.onDOMReady,Z)}})};o.stack.NameTransport=function(ab){var ac;var ae,ai,aa,ag,ah,Y,X;function af(al){var ak=ab.remoteHelper+(ae?"#_3":"#_2")+ab.channel;ai.contentWindow.sendMessage(al,ak)}function ad(){if(ae){if(++ag===2||!ae){ac.up.callback(true)}}else{af("ready");ac.up.callback(true)}}function aj(ak){ac.up.incoming(ak,Y)}function Z(){if(ah){K(function(){ah(true)},0)}}return(ac={outgoing:function(al,am,ak){ah=ak;af(al)},destroy:function(){ai.parentNode.removeChild(ai);ai=null;if(ae){aa.parentNode.removeChild(aa);aa=null}},onDOMReady:function(){ae=ab.isHost;ag=0;Y=j(ab.remote);ab.local=B(ab.local);if(ae){o.Fn.set(ab.channel,function(al){if(ae&&al==="ready"){o.Fn.set(ab.channel,aj);ad()}});X=P(ab.remote,{xdm_e:ab.local,xdm_c:ab.channel,xdm_p:2});T(ab.props,{src:X+"#"+ab.channel,name:U+ab.channel+"_provider"});aa=A(ab)}else{ab.remoteHelper=ab.remote;o.Fn.set(ab.channel,aj)}var ak=function(){var al=ai||this;x(al,"load",ak);o.Fn.set(ab.channel+"_load",Z);(function am(){if(typeof al.contentWindow.sendMessage=="function"){ad()}else{K(am,50)}}())};ai=A({props:{src:ab.local+"#_4"+ab.channel},onLoad:ak})},init:function(){G(ac.onDOMReady,ac)}})};o.stack.HashTransport=function(Z){var ac;var ah=this,af,aa,X,ad,am,ab,al;var ag,Y;function ak(ao){if(!al){return}var an=Z.remote+"#"+(am++)+"_"+ao;((af||!ag)?al.contentWindow:al).location=an}function ae(an){ad=an;ac.up.incoming(ad.substring(ad.indexOf("_")+1),Y)}function aj(){if(!ab){return}var an=ab.location.href,ap="",ao=an.indexOf("#");if(ao!=-1){ap=an.substring(ao)}if(ap&&ap!=ad){ae(ap)}}function ai(){aa=setInterval(aj,X)}return(ac={outgoing:function(an,ao){ak(an)},destroy:function(){N.clearInterval(aa);if(af||!ag){al.parentNode.removeChild(al)}al=null},onDOMReady:function(){af=Z.isHost;X=Z.interval;ad="#"+Z.channel;am=0;ag=Z.useParent;Y=j(Z.remote);if(af){T(Z.props,{src:Z.remote,name:U+Z.channel+"_provider"});if(ag){Z.onLoad=function(){ab=N;ai();ac.up.callback(true)}}else{var ap=0,an=Z.delay/50;(function ao(){if(++ap>an){throw new Error("Unable to reference listenerwindow")}try{ab=al.contentWindow.frames[U+Z.channel+"_consumer"]}catch(aq){}if(ab){ai();ac.up.callback(true)}else{K(ao,50)}}())}al=A(Z)}else{ab=N;ai();if(ag){al=parent;ac.up.callback(true)}else{T(Z,{props:{src:Z.remote+"#"+Z.channel+new Date(),name:U+Z.channel+"_consumer"},onLoad:function(){ac.up.callback(true)}});al=A(Z)}}},init:function(){G(ac.onDOMReady,ac)}})};o.stack.ReliableBehavior=function(Y){var aa,ac;var ab=0,X=0,Z="";return(aa={incoming:function(af,ad){var ae=af.indexOf("_"),ag=af.substring(0,ae).split(",");af=af.substring(ae+1);if(ag[0]==ab){Z="";if(ac){ac(true);ac=null}}if(af.length>0){aa.down.outgoing(ag[1]+","+ab+"_"+Z,ad);if(X!=ag[1]){X=ag[1];aa.up.incoming(af,ad)}}},outgoing:function(af,ad,ae){Z=af;ac=ae;aa.down.outgoing(X+","+(++ab)+"_"+af,ad)}})};o.stack.QueueBehavior=function(Z){var ac,ad=[],ag=true,aa="",af,X=0,Y=false,ab=false;function ae(){if(Z.remove&&ad.length===0){w(ac);return}if(ag||ad.length===0||af){return}ag=true;var ah=ad.shift();ac.down.outgoing(ah.data,ah.origin,function(ai){ag=false;if(ah.callback){K(function(){ah.callback(ai)},0)}ae()})}return(ac={init:function(){if(t(Z)){Z={}}if(Z.maxLength){X=Z.maxLength;ab=true}if(Z.lazy){Y=true}else{ac.down.init()}},callback:function(ai){ag=false;var ah=ac.up;ae();ah.callback(ai)},incoming:function(ak,ai){if(ab){var aj=ak.indexOf("_"),ah=parseInt(ak.substring(0,aj),10);aa+=ak.substring(aj+1);if(ah===0){if(Z.encode){aa=k(aa)}ac.up.incoming(aa,ai);aa=""}}else{ac.up.incoming(ak,ai)}},outgoing:function(al,ai,ak){if(Z.encode){al=H(al)}var ah=[],aj;if(ab){while(al.length!==0){aj=al.substring(0,X);al=al.substring(aj.length);ah.push(aj)}while((aj=ah.shift())){ad.push({data:ah.length+"_"+aj,origin:ai,callback:ah.length===0?ak:null})}}else{ad.push({data:al,origin:ai,callback:ak})}if(Y){ac.down.init()}else{ae()}},destroy:function(){af=true;ac.down.destroy()}})};o.stack.VerifyBehavior=function(ab){var ac,aa,Y,Z=false;function X(){aa=Math.random().toString(16).substring(2);ac.down.outgoing(aa)}return(ac={incoming:function(af,ad){var ae=af.indexOf("_");if(ae===-1){if(af===aa){ac.up.callback(true)}else{if(!Y){Y=af;if(!ab.initiate){X()}ac.down.outgoing(af)}}}else{if(af.substring(0,ae)===Y){ac.up.incoming(af.substring(ae+1),ad)}}},outgoing:function(af,ad,ae){ac.down.outgoing(aa+"_"+af,ad,ae)},callback:function(ad){if(ab.initiate){X()}}})};o.stack.RpcBehavior=function(ad,Y){var aa,af=Y.serializer||O();var ae=0,ac={};function X(ag){ag.jsonrpc="2.0";aa.down.outgoing(af.stringify(ag))}function ab(ag,ai){var ah=Array.prototype.slice;return function(){var aj=arguments.length,al,ak={method:ai};if(aj>0&&typeof arguments[aj-1]==="function"){if(aj>1&&typeof arguments[aj-2]==="function"){al={success:arguments[aj-2],error:arguments[aj-1]};ak.params=ah.call(arguments,0,aj-2)}else{al={success:arguments[aj-1]};ak.params=ah.call(arguments,0,aj-1)}ac[""+(++ae)]=al;ak.id=ae}else{ak.params=ah.call(arguments,0)}if(ag.namedParams&&ak.params.length===1){ak.params=ak.params[0]}X(ak)}}function Z(an,am,ai,al){if(!ai){if(am){X({id:am,error:{code:-32601,message:"Procedure not found."}})}return}var ak,ah;if(am){ak=function(ao){ak=q;X({id:am,result:ao})};ah=function(ao,ap){ah=q;var aq={id:am,error:{code:-32099,message:ao}};if(ap){aq.error.data=ap}X(aq)}}else{ak=ah=q}if(!r(al)){al=[al]}try{var ag=ai.method.apply(ai.scope,al.concat([ak,ah]));if(!t(ag)){ak(ag)}}catch(aj){ah(aj.message)}}return(aa={incoming:function(ah,ag){var ai=af.parse(ah);if(ai.method){if(Y.handle){Y.handle(ai,X)}else{Z(ai.method,ai.id,Y.local[ai.method],ai.params)}}else{var aj=ac[ai.id];if(ai.error){if(aj.error){aj.error(ai.error)}}else{if(aj.success){aj.success(ai.result)}}delete ac[ai.id]}},init:function(){if(Y.remote){for(var ag in Y.remote){if(Y.remote.hasOwnProperty(ag)){ad[ag]=ab(Y.remote[ag],ag)}}}aa.down.init()},destroy:function(){for(var ag in Y.remote){if(Y.remote.hasOwnProperty(ag)&&ad.hasOwnProperty(ag)){delete ad[ag]}}aa.down.destroy()}})};b.easyXDM=o})(window,document,location,window.setTimeout,decodeURIComponent,encodeURIComponent);;/**
  * lscache library
  * Copyright (c) 2011, Pamela Fox
  *
@@ -2216,7 +933,8 @@ Test the schema version inside of lscache, and if it has changed, flush the cach
     @type {object}
     @global
  */
-var Fiber = this.Fiber.noConflict();;/*
+var Fiber = this.Fiber.noConflict();
+;/*
 Inject
 Copyright 2011 LinkedIn
 
@@ -2257,17 +975,22 @@ var Analyzer;
        * @public
        * @returns {Array} a clean list of modules without buildins
        */
+
       stripBuiltins: function (modules) {
-        var strippedModuleList = [];
-        var moduleId;
-        for (var i = 0, len = modules.length; i < len; i++) {
-          moduleId = modules[i];
-          if (moduleId !== 'require' && moduleId !== 'exports' && moduleId !== 'module') {
-            strippedModuleList.push(moduleId);
+
+        var strippedModuleList = [],
+            len = modules.length,
+            i = 0;
+
+        for (i; i < len; i++) {
+          //modules[i] is the moduleId
+          if (!BUILTINS[modules[i]]) {
+            strippedModuleList.push(modules[i]);
           }
         }
         return strippedModuleList;
       },
+
       
       /**
        * Extract the clean dependency requires from a given file as
@@ -2280,8 +1003,43 @@ var Analyzer;
        * module file
        */
       extractRequires: function (file) {
-        var result = LinkJS.parse(file);
-        return result.requires;
+        /*jshint boss:true */
+
+        var dependencies = [],
+            dependencyCache = {
+              require: 1,
+              module: 1,
+              exports: 1
+            },
+            item,
+            term,
+            dep;
+
+        if (!file) {
+          return [];
+        }
+
+        file = file.replace(JS_COMMENTS_REGEX, '');
+
+        while (item = REQUIRE_REGEX.exec(file)) {
+          dep = item[1];
+          if (!dependencyCache[dep]) {
+            dependencyCache[dep] = 1;
+            dependencies.push(dep);
+          }
+        }
+        
+        while (item = DEFINE_REGEX.exec(file)) {
+          while (term = DEFINE_TERM_REGEX.exec(item[1])) {
+            dep = term[1];
+            if (!dependencyCache[dep]) {
+              dependencyCache[dep] = 1;
+              dependencies.push(dep);
+            }
+          }
+        }
+        
+        return dependencies;
       }
     };
   });
@@ -2400,18 +1158,15 @@ var Communicator;
       if (statusCode === 200 && ! userConfig.xd.relayFile ) {
         writeToCache(url, contents);
       }
+      
+      // all non-200 codes create a runtime error that includes the error code
+      if (statusCode !== 200) {
+        contents = 'throw new Error(\'Error ' + statusCode + ': Unable to retrieve ' + url + '\');';
+      }
 
       // locate all callbacks associated with the URL
       each(downloadCompleteQueue[url], function (cb) {
-        if (statusCode !== 200) {
-          if (Executor) {
-            Executor.flagModuleAsBroken(moduleId);
-          }
-          cb(false);
-        }
-        else {
-          cb(contents);
-        }
+        cb(contents);
       });
       downloadCompleteQueue[url] = [];
     }
@@ -2579,7 +1334,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing,
 software distributed under the License is distributed on an "AS
@@ -2595,51 +1350,13 @@ governing permissions and limitations under the License.
  * modules have been AMD-defined, are broken, or contain circular
  * references.
  * @file
-**/
+ **/
 var Executor;
-(function () {
-
-  /**
-   * create a script node containing code to execute when
-   * placed into the page. IE behaves differently from other
-   * browsers, which is why the logic has been encapsulated into
-   * a function.
-   * @function
-   * @param {String} code - the code to create a node with
-   * @private
-   */
-  function createEvalScript(code) {
-    var scr = document.createElement('script');
-    scr.type = 'text/javascript';
-    try {
-      scr.text = code;
-    }
-    catch (e) {
-      try {
-        scr.innerHTML = code;
-      }
-      catch (ee) {
-        return false;
-      }
-    }
-    return scr;
-  }
-
-  /**
-   * remove an inserted script node from the page.
-   * It is put into a setTimeout call so that it will
-   * happen after all other code in queue has completed.
-   * @function
-   * @param {node} node - the HTML node to clean
-   * @private
-   */
-  function cleanupEvalScriptNode(node) {
-    context.setTimeout(function () {
-      if (docHead) {
-        return docHead.removeChild(node);
-      }
-    });
-  }
+(function() {
+  
+  //Cache to store errors thrown by failed modules(indexed by moduleId)
+  //getModule uses this to return the right error when asked for a broken module
+  var moduleFailureCache = {};
 
   /**
    * the document head
@@ -2647,52 +1364,234 @@ var Executor;
    * @type {boolean}
    */
   var docHead = false;
-
+  
   /**
-   * on error, this offset represents the delta between actual
-   * errors and the reported line
+   * Determines if an object has its own property. Uses {} instead of a local
+   * object in case the hasOwnProperty property has been overwritten
+   * @method Executor.hasOwnProperty
    * @private
-   * @type {int}
+   * @param {Object} obj - the object to test for a property on
+   * @param {String} prop - the prop to test for
+   * @returns Boolean
    */
-  var onErrorOffset = (IS_GK) ? -3 : 0;
-
-  /**
-   * the old onerror object for restoring
-   * @private
-   * @type {*}
-   */
-  var initOldError = context.onerror;
+  function hasOwnProperty(obj, prop) {
+    return {}.prototype.hasOwnProperty.call(obj, prop);
+  }
 
   // capture document head
-  try { docHead = document.getElementsByTagName('head')[0]; }
-  catch (e) { docHead = false; }
-
-  /**
-   * extract line numbers from an exception.
-   * it turns out that an exception can have an error line
-   * in multiple places. If there is e.lineNumber, then we
-   * can use that. Otherwise, we deconstruct the stack and
-   * locate the trace line with a line number
-   * @function
-   * @param {Exception} e - the exception to get a line number from
-   * @private
-   */
-  function getLineNumberFromException(e) {
-    var lines;
-    var phrases;
-    var offset = parseInt(onErrorOffset, 10);
-    if (typeof(e.lineNumber) !== 'undefined' && e.lineNumber !== null) {
-      return parseInt(e.lineNumber, 10) + offset;
-    }
-    if (typeof(e.line) !== 'undefined' && e.line !== null) {
-      return parseInt(e.line, 10) + offset;
-    }
-    if (e.stack) {
-      lines = e.stack.split('\n');
-      phrases = lines[1].split(':');
-      return parseInt(phrases[phrases.length - 2], 10) + offset;
-    }
+  try {
+    docHead = document.getElementsByTagName('head')[0];
+  } catch (e) {
+    docHead = false;
   }
+
+  // stack normalizer from https://github.com/eriwen/javascript-stacktrace/blob/master/stacktrace.js
+  var stacknorm = {
+    /**
+     * Mode could differ for different exception, e.g.
+     * exceptions in Chrome may or may not have arguments or stack.
+     *
+     * @return {String} mode of operation for the exception
+     */
+    mode: function(e) {
+      if (e['arguments'] && e.stack) {
+        return 'chrome';
+      } else if (e.stack && e.sourceURL) {
+        return 'safari';
+      } else if (e.stack && e.number) {
+        return 'ie';
+      } else if (e.stack && e.fileName) {
+        return 'firefox';
+      } else if (e.message && e['opera#sourceloc']) {
+        // e.message.indexOf("Backtrace:") > -1 -> opera9
+        // 'opera#sourceloc' in e -> opera9, opera10a
+        // !e.stacktrace -> opera9
+        if (!e.stacktrace) {
+          return 'opera9'; // use e.message
+        }
+        if (e.message.indexOf('\n') > -1 && e.message.split('\n').length > e.stacktrace.split('\n').length) {
+          // e.message may have more stack entries than e.stacktrace
+          return 'opera9'; // use e.message
+        }
+        return 'opera10a'; // use e.stacktrace
+      } else if (e.message && e.stack && e.stacktrace) {
+        // e.stacktrace && e.stack -> opera10b
+        if (e.stacktrace.indexOf("called from line") < 0) {
+          return 'opera10b'; // use e.stacktrace, format differs from 'opera10a'
+        }
+        // e.stacktrace && e.stack -> opera11
+        return 'opera11'; // use e.stacktrace, format differs from 'opera10a', 'opera10b'
+      } else if (e.stack && !e.fileName) {
+        // phantomJS looks like chrome, but only returns line numbers
+        // We can look for [\d]+:[\d]+)?\n|$
+        // Chrome 27 does not have e.arguments as earlier versions,
+        // but still does not have e.fileName as Firefox
+        var hasColumns = /:[\d]+:[\d]+\)?(\n|$)/;
+        return (hasColumns.test(e.stack)) ? 'chrome' : 'phantom';
+      }
+      return 'other';
+    },
+  
+    /**
+     * Given an Error object, return a formatted Array based on Chrome's stack string.
+     *
+     * @param e - Error object to inspect
+     * @return Array<String> of function calls, files and line numbers
+     */
+    chrome: function(e) {
+      return (e.stack + '\n')
+        .replace(/^\s+(at eval )?at\s+/gm, '') // remove 'at' and indentation
+        .replace(/^([^\(]+?)([\n$])/gm, '{anonymous}() ($1)$2')
+        .replace(/^Object.<anonymous>\s*\(([^\)]+)\)/gm, '{anonymous}() ($1)')
+        .replace(/^(.+) \((.+)\)$/gm, '$1@$2')
+        .split('\n')
+        .slice(1, -1);
+    },
+    
+    /**
+     * Given an Error object, return a formatted Array based on PhantomJS's stack string.
+     *
+     * @param e - Error object to inspect
+     * @return Array<String> of function calls, files and line numbers
+     */
+    phantom: function(e) {
+      return (e.stack + '\n')
+        .replace(/^\s+(at eval )?at\s+/gm, '') // remove 'at' and indentation
+        .replace(/^([^\(]+?)([\n$])/gm, '{anonymous}() ($1)$2')
+        .replace(/^Object.<anonymous>\s*\(([^\)]+)\)/gm, '{anonymous}() ($1)')
+        .replace(/^(.+) \((.+)\)$/gm, '$1@$2')
+        .replace(/(.+):([0-9]+)(\)?)/g, '$1:$2:0$3')
+        .split('\n')
+        .slice(1, -1);
+    },
+
+    /**
+     * Given an Error object, return a formatted Array based on Safari's stack string.
+     *
+     * @param e - Error object to inspect
+     * @return Array<String> of function calls, files and line numbers
+     */
+    safari: function(e) {
+      return e.stack.replace(/\[native code\]\n/m, '')
+        .replace(/^(?=\w+Error\:).*$\n/m, '')
+        .replace(/^@/gm, '{anonymous}()@')
+        .split('\n');
+    },
+
+    /**
+     * Given an Error object, return a formatted Array based on IE's stack string.
+     *
+     * @param e - Error object to inspect
+     * @return Array<String> of function calls, files and line numbers
+     */
+    ie: function(e) {
+      return e.stack
+        .replace(/^\s*at\s+(.*)$/gm, '$1')
+        .replace(/^Anonymous function\s+/gm, '{anonymous}() ')
+        .replace(/^(.+)\s+\((.+)\)$/gm, '$1@$2')
+        .split('\n')
+        .slice(1);
+    },
+
+    /**
+     * Given an Error object, return a formatted Array based on Firefox's stack string.
+     *
+     * @param e - Error object to inspect
+     * @return Array<String> of function calls, files and line numbers
+     */
+    firefox: function(e) {
+      return e.stack.replace(/(?:\n@:0)?\s+$/m, '')
+        .replace(/^(?:\((\S*)\))?@/gm, '{anonymous}($1)@')
+        .split('\n');
+    },
+
+    opera11: function(e) {
+      var ANON = '{anonymous}', lineRE = /^.*line (\d+), column (\d+)(?: in (.+))? in (\S+):$/;
+      var lines = e.stacktrace.split('\n'), result = [];
+
+      for (var i = 0, len = lines.length; i < len; i += 2) {
+        var match = lineRE.exec(lines[i]);
+        if (match) {
+          var location = match[4] + ':' + match[1] + ':' + match[2];
+          var fnName = match[3] || "global code";
+          fnName = fnName.replace(/<anonymous function: (\S+)>/, "$1").replace(/<anonymous function>/, ANON);
+          result.push(fnName + '@' + location + ' -- ' + lines[i + 1].replace(/^\s+/, ''));
+        }
+      }
+
+      return result;
+    },
+
+    opera10b: function(e) {
+      // "<anonymous function: run>([arguments not available])@file://localhost/G:/js/stacktrace.js:27\n" +
+      // "printStackTrace([arguments not available])@file://localhost/G:/js/stacktrace.js:18\n" +
+      // "@file://localhost/G:/js/test/functional/testcase1.html:15"
+      var lineRE = /^(.*)@(.+):(\d+)$/;
+      var lines = e.stacktrace.split('\n'), result = [];
+
+      for (var i = 0, len = lines.length; i < len; i++) {
+        var match = lineRE.exec(lines[i]);
+        if (match) {
+          var fnName = match[1] ? (match[1] + '()') : "global code";
+          result.push(fnName + '@' + match[2] + ':' + match[3]);
+        }
+      }
+
+      return result;
+    },
+
+    /**
+     * Given an Error object, return a formatted Array based on Opera 10's stacktrace string.
+     *
+     * @param e - Error object to inspect
+     * @return Array<String> of function calls, files and line numbers
+     */
+    opera10a: function(e) {
+      // "  Line 27 of linked script file://localhost/G:/js/stacktrace.js\n"
+      // "  Line 11 of inline#1 script in file://localhost/G:/js/test/functional/testcase1.html: In function foo\n"
+      var ANON = '{anonymous}', lineRE = /Line (\d+).*script (?:in )?(\S+)(?:: In function (\S+))?$/i;
+      var lines = e.stacktrace.split('\n'), result = [];
+
+      for (var i = 0, len = lines.length; i < len; i += 2) {
+        var match = lineRE.exec(lines[i]);
+        if (match) {
+          var fnName = match[3] || ANON;
+          result.push(fnName + '()@' + match[2] + ':' + match[1] + ' -- ' + lines[i + 1].replace(/^\s+/, ''));
+        }
+      }
+
+      return result;
+    },
+
+    // Opera 7.x-9.2x only!
+    opera9: function(e) {
+      // "  Line 43 of linked script file://localhost/G:/js/stacktrace.js\n"
+      // "  Line 7 of inline#1 script in file://localhost/G:/js/test/functional/testcase1.html\n"
+      var ANON = '{anonymous}', lineRE = /Line (\d+).*script (?:in )?(\S+)/i;
+      var lines = e.message.split('\n'), result = [];
+
+      for (var i = 2, len = lines.length; i < len; i += 2) {
+        var match = lineRE.exec(lines[i]);
+        if (match) {
+          result.push(ANON + '()@' + match[2] + ':' + match[1] + ' -- ' + lines[i + 1].replace(/^\s+/, ''));
+        }
+      }
+
+      return result;
+    },
+
+    // Safari 5-, IE 9-, and others
+    other: function(curr) {
+      var ANON = '{anonymous}', fnRE = /function\s*([\w\-$]+)?\s*\(/i, stack = [], fn, args, maxStackSize = 10;
+      while (curr && curr['arguments'] && stack.length < maxStackSize) {
+        fn = fnRE.test(curr.toString()) ? RegExp.$1 || ANON : ANON;
+        args = Array.prototype.slice.call(curr['arguments'] || []);
+        stack[stack.length] = fn + '(' + this.stringifyArguments(args) + ')';
+        curr = curr.caller;
+      }
+      return stack;
+    }
+  };
 
   /**
    * execute a javascript module after wrapping it in sandbox code
@@ -2710,168 +1609,79 @@ var Executor;
    * @param {String} code - the code to execute
    * @param {Object} options - a collection of options
    */
-  function executeJavaScriptModule(code, options) {
-    var errorObject = null;
-    var sourceString = IS_IE ? '' : '//@ sourceURL=' + options.url;
+  function executeJavaScriptModule(code, functionId) {
+    var meta = context.Inject.INTERNAL.executor[functionId];
+    var module = meta.module;
+    var failed = false;
+    var sourceString = IS_IE ? '' : '//@ sourceURL=' + module.uri;
     var result;
-
-    options = {
-      moduleId: options.moduleId || null,
-      functionId: options.functionId || null,
-      preamble: options.preamble || '',
-      preambleLength: options.preamble.split('\n').length + 1,
-      epilogue: options.epilogue || '',
-      epilogueLength: options.epilogue.split('\n').length + 1,
-      originalCode: options.originalCode || code,
-      url: options.url || null
-    };
+    var err;
 
     // add source string in sourcemap compatible browsers
     code = [code, sourceString].join('\n');
 
-    /**
-     * a temp error handler that lasts for the duration of this code
-     * run. It allows us to catch syntax error handling in this specific
-     * code execution. It sets an errorObject via closure so that
-     * we know we entered an error state
-     * @function
-     * @param {string} err - the error string
-     * @param {string} where - the file with the error
-     * @param {int} line - the line number of the error
-     * @param {string} type - the type of error (runtime, parse)
-     */
-    var tempErrorHandler = function (err, where, line, type) {
-      var actualErrorLine =  line - options.preambleLength;
-      var originalCodeLength = options.originalCode.split('\n').length;
-      var message = '';
-
-      if (type === 'runtime') {
-        message = 'Runtime error in ' + options.moduleId + ' (' + options.url + ') on line ' + actualErrorLine + ':\n  ' + err;
-      }
-      else {
-        // case: parse
-        // end of input test
-        actualErrorLine = (actualErrorLine > originalCodeLength) ? originalCodeLength : actualErrorLine;
-        message = 'Parsing error in ' + options.moduleId + ' (' + options.url + ') on line ' + actualErrorLine + ':\n  ' + err;
-      }
-
-      // set the error object global to the executor's run
-      errorObject = new Error(message);
-      errorObject.line = actualErrorLine;
-      errorObject.stack = null;
-
-      return true;
-    };
-
-    // set global onError handler
-    // insert script - catches parse errors
-    context.onerror = tempErrorHandler;
-    var scr = createEvalScript(code);
-    if (scr && docHead) {
+    // Parse file and catch any parse errors
+    try {
+      eval(code);
+    }
+    catch(ex) {
+      // this file will fail when directly injected. We can leverage that to generate a
+      // proper syntax error, removing the LinkJS dependency completely. While the debugging
+      // is not as perfect, the 15k savings are well worth it. Window level reporting is
+      // undisturbed by this change
+      ex.message = 'Parse error in ' + module.id + ' (' + module.uri + ') please check for an uncaught error ' + ex.message;
+      var scr = document.createElement('script');
+      scr.src = module.uri;
+      scr.type = 'text/javascript';
       docHead.appendChild(scr);
-      cleanupEvalScriptNode(scr);
+      return {
+        __error: ex
+      };
     }
 
-    // if there were no errors, tempErrorHandler never ran and therefore
-    // errorObject was never set. We can now evaluate using either the eval()
+    // We only reach here if there are no parse errors
+    // We can now evaluate using either the eval()
     // method or just running the function we built.
     // if there is not a registered function in the INTERNAL namespace, there
     // must have been a syntax error. Firefox mandates an eval to expose it, so
     // we use that as the least common denominator
-    if (!errorObject) {
-      if (!context.Inject.INTERNAL.execute[options.functionId] || userConfig.debug.sourceMap) {
-        // source mapping means we will take the same source as before,
-        // add a () to the end to make it auto execute, and shove it through
-        // eval. This means we are doing dual eval (one for parse, one for
-        // runtime) when sourceMap is enabled. Some people really want their
-        // debug.
-        var toExec = code.replace(/([\w\W]+?)=([\w\W]*\})[\w\W]*?$/, '$1 = ($2)();');
-        var relativeE;
-        toExec = [toExec, sourceString].join('\n');
-        if (!context.Inject.INTERNAL.execute[options.functionId]) {
-          // there is nothing to run, so there must have been an uncaught
-          // syntax error (firefox).
-          try {
-            try { eval('+\n//@ sourceURL=Inject-Executor-line.js'); } catch (ee) { relativeE = ee; }
-            eval(toExec);
-          }
-          catch (e) {
-            if (e.lineNumber && relativeE.lineNumber) {
-              e.lineNumber = e.lineNumber - relativeE.lineNumber + 1;
-            }
-            else {
-              e.lineNumber = getLineNumberFromException(e);
-            }
-            tempErrorHandler(e.message, null, e.lineNumber, 'parse');
-          }
-        }
-        else {
-          // again, we are creating a "relativeE" to capture the eval line
-          // this allows us to get accurate line numbers in firefox
-          try {
-            eval('+\n//@ sourceURL=Inject-Executor-line.js');
-          }
-          catch (ee) {
-            relativeE = ee;
-          }
-          eval(toExec);
-        }
+    if (userConfig.debug.sourceMap) {
+      // if sourceMap is enabled
+      // create a version of our code that can be put through eval with the
+      // sourcemap string enabled. This allows some browsers (Chrome and Firefox)
+      // to properly see file names instead of just "eval" as the file name in inspectors
+      var toExec = code.replace(/([\w\W]+?)=([\w\W]*\})[\w\W]*?$/, '$1 = ($2)();');
+      toExec = [toExec, sourceString].join('\n');
 
-        if (context.Inject.INTERNAL.execute[options.functionId]) {
-          result = context.Inject.INTERNAL.execute[options.functionId];
-          // set the error object using our standard method
-          // result.error will be later overwritten with a clean and readable Error()
-          if (result.error) {
-            if (result.error.lineNumber && relativeE.lineNumber) {
-              result.error.lineNumber = result.error.lineNumber - relativeE.lineNumber;
-            }
-            else {
-              result.error.lineNumber = getLineNumberFromException(result.error);
-            }
-            tempErrorHandler(result.error.message, null, result.error.lineNumber, 'runtime');
-          }
-        }
-      }
-      else {
-        // just run it. Try/catch will capture exceptions and put them
-        // into result.error for us from commonjs harness
-        result = context.Inject.INTERNAL.execute[options.functionId]();
-        if (result.error) {
-          tempErrorHandler(result.error.message, null, getLineNumberFromException(result.error), 'runtime');
-        }
+      eval(toExec);
+      
+      if (module.__error) {
+        module.__error.message = 'Runtime error in ' + module.id + '(' + module.uri + ') ' + module.__error.message;
       }
     }
+    else {
+      // there is an executable object AND source maps are off
+      // just run it. Try/catch will capture exceptions and put them
+      // into result.__error internally for us from the commonjs harness
+      // NOTE: these all receive "-1" due to the semicolon auto added by the Executor at the end of
+      // the preamble.
+      // __EXCEPTION__.lineNumber - Inject.INTERNAL.modules.exec2.__error_line.lineNumber - 1
+      context.Inject.INTERNAL.executor[functionId].fn();
 
-    // if we have an error object, we should attach it to the result
-    // if there is no result, make an empty shell so we can test for
-    // result.error in other code.
-    if (errorObject) {
-      if (!result) {
-        result = {};
+      if (module.__error) {
+        module.__error.message = 'Runtime error in ' + module.id + '(' + module.uri + ') ' + module.__error.message;
       }
-      result.error = errorObject;
     }
-
-    // clean up our error handler
-    context.onerror = initOldError;
-
-    // clean up the function or object we globally created if it exists
-    if (context.Inject.INTERNAL.execute[options.functionId]) {
-      delete context.Inject.INTERNAL.execute[options.functionId];
-    }
-
-    // return the results
-    return result;
   }
 
-  var AsStatic = Fiber.extend(function () {
+  var AsStatic = Fiber.extend(function() {
     var functionCount = 0;
     return {
       /**
        * Create the executor and initialize its caches
        * @constructs Executor
        */
-      init: function () {
+      init : function() {
         this.clearCaches();
       },
 
@@ -2880,21 +1690,12 @@ var Executor;
        * @method Executor.clearCaches
        * @public
        */
-      clearCaches: function () {
+      clearCaches : function() {
         // cache of resolved exports
         this.cache = {};
-
-        // cache of executed modules (true/false)
-        this.executed = {};
-
-        // cache of "broken" modules (true/false)
-        this.broken = {};
-
-        // cache of "circular" modules (true/false)
-        this.circular = {};
-
-        // AMD style defined modules (true/false)
-        this.defined = {};
+        
+        // any modules that had errors
+        this.errors = {};
 
         // the stack of AMD define functions, because they "could" be anonymous
         this.anonymousAMDStack = [];
@@ -2910,10 +1711,10 @@ var Executor;
        * @param {string} path - the path for the current module
        * @public
        */
-      defineExecutingModuleAs: function (moduleId, path) {
+      defineExecutingModuleAs : function(moduleId, path) {
         return this.anonymousAMDStack.push({
-          id: moduleId,
-          path: path
+          id : moduleId,
+          path : path
         });
       },
 
@@ -2922,7 +1723,7 @@ var Executor;
        * @method Executor.undefineExecutingModule
        * @public
        */
-      undefineExecutingModule: function () {
+      undefineExecutingModule : function() {
         return this.anonymousAMDStack.pop();
       },
 
@@ -2932,75 +1733,8 @@ var Executor;
        * @public
        * @returns {object} the id and path of the current module
        */
-      getCurrentExecutingAMD: function () {
+      getCurrentExecutingAMD : function() {
         return this.anonymousAMDStack[this.anonymousAMDStack.length - 1];
-      },
-
-      /**
-       * Assigning a module puts it into a special scope. Since we cannot
-       * predict what was going to be put here, we have to assume the calling
-       * context knows what the intent was. This is primarily used in AMD
-       * flows, but is made generic should someone else want to force assign
-       * exports through an addRule mechanism
-       * @method Executor.assignModule
-       * @param {String} parentName - the name of the parent module
-       * @param {String} moduleName - the name of the module that was invoked
-       * @param {String} path - a path for module completeness (module.uri) sake
-       * @param {Object} exports - the item to assign to module.exports
-       */
-      assignModule: function (parentName, moduleName, path, exports) {
-        var module = Executor.createModule(parentName + '^^^' + moduleName, path);
-        module.exports = exports;
-      },
-
-      /**
-       * Retrieves a module from an assignment location
-       * Modules are placed in a special namespace when assigned.
-       * This allows them to be retrieved without polluting the main
-       * namespaces
-       * @method Executor.getAssignedModule
-       * @param {String} parentName - the name of the parent module
-       * @param {String} moduleName - the name of the module to retrieve
-       * @returns {Object} the module object
-       */
-      getAssignedModule: function (parentName, moduleName) {
-        return this.getModule(parentName + '^^^' + moduleName);
-      },
-
-      /**
-       * run all items within the tree, then run the provided callback
-       * If we encounter any modules that are paused, we BLOCK and wait
-       * for their resolution
-       * @method Executor.runTree
-       * @param {TreeNode} root - the root TreeNode to run execution on
-       * @param {Object} files - a hash of filename / contents
-       * @param {Function} callback - a callback to run when the tree is executed
-       * @public
-       */
-      runTree: function (root, files, callback) {
-        // do a post-order traverse of files for execution
-        var returns = [];
-        root.postOrder(function (node) {
-          if (!node.getValue().name) {
-            return; // root node
-          }
-          var name = node.getValue().name;
-          var path = node.getValue().path;
-          var file = files[name];
-          var resolvedId = node.getValue().resolvedId;
-          var module;
-
-          Executor.createModule(resolvedId, path);
-          if (!node.isCircular()) {
-            // note: we use "name" here, because of CommonJS Spec 1.0 Modules
-            // the relative includes we find must be relative to "name", not the
-            // resovled name
-            module = Executor.runModule(resolvedId, file, path);
-            returns.push(module);
-          }
-        });
-
-        callback(returns);
       },
 
       /**
@@ -3011,19 +1745,63 @@ var Executor;
        * @param {String} idAlias - an ID or alias to get
        * @returns {Object} module at the ID or alias
        */
-      getFromCache: function(idAlias) {
+      getFromCache : function(idAlias) {
+        var alias = RulesEngine.getOriginalName(idAlias);
+        var err;
+        var errorMessage;
+        var e;
+        var module;
+        var stackMode;
+        var mainTrace;
+        var offsetTrace;
+        var mainTracePieces;
+        var offsetTracePieces;
+        var actualLine;
+        var actualChar;
+        
+        if (HAS_OWN_PROPERTY.call(this.errors, idAlias) && this.errors[idAlias]) {
+          err = this.errors[idAlias];
+        }
+        else if (alias && HAS_OWN_PROPERTY.call(this.errors, alias) && this.errors[alias]) {
+          err = this.errors[alias];
+        }
+        
         // check by moduleID
         if (this.cache[idAlias]) {
-          return this.cache[idAlias];
+          module = this.cache[idAlias];
         }
-
-        // check by alias (updates module ID reference)
-        var alias = RulesEngine.getOriginalName(idAlias);
-        if (alias && this.cache[alias]) {
+        else if(alias && this.cache[alias]) {
           this.cache[idAlias] = this.cache[alias];
+          module = this.cache[alias];
         }
-
-        return this.cache[idAlias] || null;
+        
+        if (err) {
+          errorMessage = 'module ' + idAlias + ' failed to load successfully';
+          errorMessage += (err) ? ': ' + err.message : '';
+          
+          // building a better stack trace
+          if (module && module.__error_line) {
+            // runtime errors need better stack trace
+            stackMode = stacknorm.mode(err);
+            mainTrace = stacknorm[stackMode](err);
+            offsetTrace = stacknorm[stackMode](module.__error_line);
+            mainTracePieces = mainTrace[0].split(/:/);
+            offsetTracePieces = offsetTrace[0].split(/:/);
+            
+            actualLine =  mainTracePieces[mainTracePieces.length - 2] - offsetTracePieces[offsetTracePieces.length - 2];
+            actualLine = actualLine - 1;
+            
+            actualChar = mainTracePieces[mainTracePieces.length - 1];
+            
+            errorMessage = errorMessage + ' @ Line: ' + actualLine + ' Column: ' + actualChar + ' ';
+          }
+          
+          err.message = errorMessage;
+          
+          throw err;
+        }
+        
+        return module || null;
       },
 
       /**
@@ -3034,24 +1812,29 @@ var Executor;
        * @public
        * @returns {Object} - a module object representation
        */
-      createModule: function (moduleId, path) {
+      createModule : function(moduleId, qualifiedId, path) {
         var module;
-
-        if (!this.getFromCache(moduleId)) {
-          module = {};
-          module.id = moduleId || null;
-          module.uri = path || null;
-          module.exports = {};
-          module.error = null;
-          module.setExports = function (xobj) {
-            var name;
-            for (name in module.exports) {
-              if (Object.hasOwnProperty.call(module.exports, name)) {
-                debugLog('cannot setExports when exports have already been set. setExports skipped');
-                return;
-              }
+        
+        if (!(/\!/.test(moduleId)) && this.cache[moduleId]) {
+          this.cache[qualifiedId] = this.cache[moduleId];
+          return this.cache[moduleId];
+        }
+        
+        module = {};
+        module.id = moduleId || null;
+        module.qualifiedId = qualifiedId || null;
+        module.uri = path || null;
+        module.exports = {};
+        module.exec = false;
+        module.setExports = function(xobj) {
+          var name;
+          for (name in module.exports) {
+            if (Object.hasOwnProperty.call(module.exports, name)) {
+              debugLog('cannot setExports when exports have already been set. setExports skipped');
+              return;
             }
-            switch (typeof(xobj)) {
+          }
+          switch (typeof(xobj)) {
             case 'object':
               // objects are enumerated and added
               for (name in xobj) {
@@ -3065,72 +1848,17 @@ var Executor;
               // non objects are written directly, blowing away exports
               module.exports = xobj;
               break;
-            }
-          };
-
-          if (moduleId) {
-            this.cache[moduleId] = module;
           }
+        };
+        
+        // Important AMD item. Do not store any IDs with an !
+        if (!(/\!/.test(moduleId))) {
+          this.cache[moduleId] = module;
         }
-
-        if (moduleId) {
-          return this.cache[moduleId];
-        }
-        else {
-          return module;
-        }
-      },
-
-      /**
-       * Check if a module is an AMD style define
-       * @method Executor.isModuleDefined
-       * @param {string} moduleId - the module ID
-       * @public
-       * @returns {boolean} if the module is AMD defined
-       */
-      isModuleDefined: function (moduleId) {
-        return this.defined[moduleId];
-      },
-
-      /**
-       * Flag a module as defined AMD style
-       * @method Executor.flagModuleAsDefined
-       * @param {string} moduleId - the module ID
-       * @public
-       */
-      flagModuleAsDefined: function (moduleId) {
-        this.defined[moduleId] = true;
-      },
-
-      /**
-       * Flag a module as broken
-       * @method Executor.flagModuleAsBroken
-       * @param {string} moduleId - the module ID
-       * @public
-       */
-      flagModuleAsBroken: function (moduleId) {
-        this.broken[moduleId] = true;
-      },
-
-      /**
-       * Flag a module as circular
-       * @method Executor.flagModuleAsCircular
-       * @param {string} moduleId - the module ID
-       * @public
-       */
-      flagModuleAsCircular: function (moduleId) {
-        this.circular[moduleId] = true;
-      },
-
-      /**
-       * returns if the module is circular or not
-       * @method Executor.isModuleCircular
-       * @param {string} moduleId - the module ID
-       * @public
-       * @returns {boolean} true if the module is circular
-       */
-      isModuleCircular: function (moduleId) {
-        return this.circular[moduleId];
+        
+        this.cache[qualifiedId] = module;
+        
+        return module;
       },
 
       /**
@@ -3140,81 +1868,58 @@ var Executor;
        * @public
        * @returns {object} the module at the identifier
        */
-      getModule: function (moduleId) {
-        if (this.broken[moduleId] && this.broken.hasOwnProperty(moduleId)) {
-          throw new Error('module ' + moduleId + ' failed to load successfully');
-        }
-
-        // return from the cache (or its alias location)
-        return this.getFromCache(moduleId) || null;
+      getModule : function(moduleId, undef) {
+        return this.getFromCache(moduleId) || undef;
       },
-
+      
       /**
        * Build a sandbox around and execute a module
        * @method Executor.runModule
-       * @param {string} moduleId - the module ID
+       * @param {object} module - the module
        * @param {string} code - the code to execute
-       * @param {string} path - the URL for the module to run
        * @returns {Object} a module object
        * @public
        */
-      runModule: function (moduleId, code, path) {
-        debugLog('Executor', 'executing ' + path);
-
-        // check cache
-        if (this.cache[moduleId] && this.executed[moduleId]) {
-          return this.cache[moduleId];
-        }
-
-        // check AMD define-style cache
-        if (this.cache[moduleId] && this.defined[moduleId]) {
-          return this.cache[moduleId];
-        }
+      runModule : function(module, code) {
+        debugLog('Executor', 'executing ' + module.uri);
 
         var functionId = 'exec' + (functionCount++);
+        var localMeta = {};
+        context.Inject.INTERNAL.executor[functionId] = localMeta;
+        
+        localMeta.module = module;
+        localMeta.require = RequireContext.createRequire(module.id, module.uri, module.qualifiedId);
+        localMeta.define = RequireContext.createInlineDefine(module, localMeta.require);
 
         function swapUnderscoreVars(text) {
-          return text.replace(/__MODULE_ID__/g, moduleId)
-                     .replace(/__MODULE_URI__/g, path)
-                     .replace(/__FUNCTION_ID__/g, functionId)
-                     .replace(/__INJECT_NS__/g, NAMESPACE);
+          return text.replace(/__MODULE_ID__/g, module.id)
+            .replace(/__MODULE_URI__/g, module.uri)
+            .replace(/__FUNCTION_ID__/g, functionId)
+            .replace(/__INJECT_NS__/g, NAMESPACE);
         }
 
         var header = swapUnderscoreVars(commonJSHeader);
         var footer = swapUnderscoreVars(commonJSFooter);
         var runCommand = ([header, ';', code, footer]).join('\n');
-        var result;
 
-        result = executeJavaScriptModule(runCommand, {
-          moduleId: moduleId,
-          functionId: functionId,
-          preamble: header,
-          epilogue: footer,
-          originalCode: code,
-          url: path
-        });
+        executeJavaScriptModule(runCommand, functionId);
 
         // if a global error object was created
-        if (result && result.error) {
-          context[NAMESPACE].clearCache();
-          throw result.error;
+        if (module.__error) {
+          // context[NAMESPACE].clearCache();
+          // exit early, this module is broken
+          debugLog('Executor', 'broken', module.id, module.uri, module.exports);
+          this.errors[module.id] = module.__error;
         }
 
-        // cache the result (IF NOT AMD)
-        if (!DEFINE_EXTRACTION_REGEX.test(code)) {
-          this.cache[moduleId] = result;
-        }
-
-        this.executed[moduleId] = true;
-        debugLog('Executor', 'executed', moduleId, path, result);
-
-        // return the result
-        return result;
+        debugLog('Executor', 'executed', module.id, module.uri, module.exports);
       }
     };
   });
   Executor = new AsStatic();
-})();;/*
+})();
+
+;/*
 Inject
 Copyright 2011 LinkedIn
 
@@ -3248,49 +1953,6 @@ var InjectCore;
        * @constructs InjectCore
        */
       init: function () {},
-
-      /**
-       * create a require() method within a given context path
-       * relative require() calls can be based on the provided
-       * id and path
-       * @method InjectCore.createRequire
-       * @param {string} id - the module identifier for relative module IDs
-       * @param {string} path - the module path for relative path operations
-       * @public
-       * @returns a function adhearing to CommonJS and AMD require()
-       */
-      createRequire: function (id, path) {
-        var req = new RequireContext(id, path);
-        var require = proxy(req.require, req);
-
-        require.ensure = proxy(req.ensure, req);
-        require.run = proxy(req.run, req);
-        // resolve an identifier to a URL (AMD compatibility)
-        require.toUrl = function (identifier) {
-          var resolvedId = RulesEngine.resolveModule(identifier, id);
-          var resolvedPath = RulesEngine.resolveFile(resolvedId, path, true);
-          return resolvedPath;
-        };
-        return require;
-      },
-
-      /**
-       * create a define() method within a given context path
-       * relative define() calls can be based on the provided
-       * id and path
-       * @method InjectCore.createDefine
-       * @param {string} id - the module identifier for relative module IDs
-       * @param {string} path - the module path for relative path operations
-       * @param {boolean} disableAMD - if provided, define.amd will be false, disabling AMD detection
-       * @public
-       * @returns a function adhearing to the AMD define() method
-       */
-      createDefine: function (id, path, disableAMD) {
-        var req = new RequireContext(id, path);
-        var define = proxy(req.define, req);
-        define.amd = (disableAMD) ? false : {};
-        return define;
-      },
 
       /**
        * add a plugin to the Inject system
@@ -3449,11 +2111,13 @@ var RequireContext = Fiber.extend(function () {
      * @constructs RequireContext
      * @param {String} id - the current module ID for this context
      * @param {String} path - the current module URL for this context
+     * @param {String} qualifiedId - a (from)-joined collection of paths
      * @public
      */
-    init: function (id, path) {
+    init: function (id, path, qualifiedId) {
       this.id = id || null;
       this.path = path || null;
+      this.qualifiedId = qualifiedId || null;
     },
 
     /**
@@ -3490,52 +2154,6 @@ var RequireContext = Fiber.extend(function () {
     },
 
     /**
-     * Get the module for a provided module ID. Used as a passthrough
-     * to collect modules during depenency resolution
-     * @method requireContext#getModule
-     * @param {String} moduleId - the module ID to retrieve
-     * @protected
-     * @see Executor.getModule
-     */
-    getModule: function (moduleId) {
-      return Executor.getModule(moduleId).exports;
-    },
-
-    /**
-     * Get all modules that have loaded up to this point based on
-     * a list. Require and module calls are transparently added
-     * to the output
-     * @method RequireContext#getAllModules
-     * @param {Array|String} moduleIdOrList - a single or list of modules to resolve
-     * @param {Function} require - a require function, usually from a RequireContext
-     * @param {Object} module - a module representing the current executor, from Executor
-     * @protected
-     * @returns {Array} an array of modules matching moduleIdOrList
-     */
-    getAllModules: function (moduleIdOrList, require, module) {
-      var args = [];
-      var mId = null;
-      for (var i = 0, len = moduleIdOrList.length; i < len; i++) {
-        mId = moduleIdOrList[i];
-        switch (mId) {
-        case 'require':
-          args.push(require);
-          break;
-        case 'module':
-          args.push(module);
-          break;
-        case 'exports':
-          args.push(module.exports);
-          break;
-        default:
-          // push the resolved item onto the stack direct from executor
-          args.push(this.getModule(mId));
-        }
-      }
-      return args;
-    },
-
-    /**
      * The CommonJS and AMD require interface<br>
      * CommonJS: <strong>require(moduleId)</strong><br>
      * AMD: <strong>require(moduleList, callback)</strong>
@@ -3551,6 +2169,7 @@ var RequireContext = Fiber.extend(function () {
       var module;
       var identifier;
       var assignedModule;
+      var qualifiedId;
 
       if (typeof(moduleIdOrList) === 'string') {
         this.log('CommonJS require(string) of ' + moduleIdOrList);
@@ -3560,30 +2179,49 @@ var RequireContext = Fiber.extend(function () {
 
         // try to get the module a couple different ways
         identifier = RulesEngine.resolveModule(moduleIdOrList, this.getId());
-        module = Executor.getModule(identifier);
-        assignedModule = Executor.getAssignedModule(this.getId(), identifier);
+        qualifiedId = RequireContext.qualifiedId(identifier, this.qualifiedId);
 
-        // try the assignment identifier
-        if (assignedModule) {
-          return assignedModule.exports;
+        // try the qualified path if we had a qualified ID
+        if (qualifiedId) {
+          module = Executor.getModule(qualifiedId);
         }
-        // then try the module
-        else if (module) {
-          return module.exports;
+        
+        // if we still don't have a module from a qualified path, try a direct get
+        if (!module) {
+          module = Executor.getModule(identifier);
         }
-        // or fail
-        else {
-          throw new Error('module ' + moduleIdOrList + ' not found');
+        
+        // still no module means it was never seen in a loading path
+        if (!module) {
+          throw new Error('module ' + moduleIdOrList + ' is not available');
         }
+        
+        // if the module has an error, we need to throw it
+        if (module.__error) {
+          throw module.__error;
+        }
+        
+        // now it's safe to return the exports
+        return module.exports;
       }
 
       // AMD require
       this.log('AMD require(Array) of ' + moduleIdOrList.join(', '));
-      var strippedModules = Analyzer.stripBuiltins(moduleIdOrList);
-      this.ensure(strippedModules, proxy(function (localRequire) {
-        var module = Executor.createModule();
-        var modules = this.getAllModules(moduleIdOrList, localRequire, module);
-        callback.apply(context, modules);
+      var resolved = [];
+      this.ensure(moduleIdOrList, proxy(function (localRequire) {
+        for (var i = 0, len = moduleIdOrList.length; i < len; i++) {
+          switch(moduleIdOrList[i]) {
+          case 'require':
+            resolved.push(localRequire);
+            break;
+          case 'module':
+          case 'exports':
+            throw new Error('require(array, callback) doesn\'t create a module. You cannot use module/exports here');
+          default:
+            resolved.push(localRequire(moduleIdOrList[i]));
+          }
+        }
+        callback.apply(context, resolved);
       }, this));
     },
 
@@ -3605,39 +2243,12 @@ var RequireContext = Fiber.extend(function () {
       // strip builtins (CommonJS doesn't download or make these available)
       moduleList = Analyzer.stripBuiltins(moduleList);
 
-      var tn;
-      var td;
-      var callsRemaining = moduleList.length;
-      var thisPath = (this.getPath()) ? this.getPath() : userConfig.moduleRoot;
-      var downloadCommand = proxy(function (root, files) {
-        Executor.runTree(root, files, proxy(function () {
-          // test if all modules are done
-          if (--callsRemaining === 0) {
-            if (callback) {
-              callback(InjectCore.createRequire(this.getId(), this.getPath()));
-            }
-          }
-        }, this));
-      }, this);
-
-      // exit early when we have no builtins left
-      if (!callsRemaining) {
-        if (callback) {
-          callback(InjectCore.createRequire(this.getId(), this.getPath()));
+      var require = proxy(this.require, this);
+      this.process(moduleList, function(root) {
+        if (typeof callback == 'function') {
+          callback(require);
         }
-        return;
-      }
-
-      // for each module, spawn a download. On download, spawn an execution
-      // when all executions have ran, fire the callback with the local require
-      // scope
-      for (var i = 0, len = moduleList.length; i < len; i++) {
-        tn = TreeDownloader.createNode(moduleList[i], thisPath);
-        td = new TreeDownloader(tn);
-        // get the tree, then run the tree, then --count
-        // if count is 0, callback
-        td.get(downloadCommand);
-      }
+      });
     },
 
     /**
@@ -3672,7 +2283,7 @@ var RequireContext = Fiber.extend(function () {
       var id = null;
       var dependencies = ['require', 'exports', 'module'];
       var dependenciesDeclared = false;
-      var executionFunctionOrLiteral = {};
+      var factory = {};
       var remainingDependencies = [];
       var resolvedDependencyList = [];
       var tempModuleId = null;
@@ -3682,10 +2293,10 @@ var RequireContext = Fiber.extend(function () {
       // while not efficient, it makes this overloaed interface easier to
       // maintain
       var interfaces = {
-        'string array object': ['id', 'dependencies', 'executionFunctionOrLiteral'],
-        'string object':       ['id', 'executionFunctionOrLiteral'],
-        'array object':        ['dependencies', 'executionFunctionOrLiteral'],
-        'object':              ['executionFunctionOrLiteral']
+        'string array object': ['id', 'dependencies', 'factory'],
+        'string object':       ['id', 'factory'],
+        'array object':        ['dependencies', 'factory'],
+        'object':              ['factory']
       };
       var key = [];
       var value;
@@ -3718,29 +2329,9 @@ var RequireContext = Fiber.extend(function () {
           dependencies = value;
           dependenciesDeclared = true;
           break;
-        case 'executionFunctionOrLiteral':
-          executionFunctionOrLiteral = value;
+        case 'factory':
+          factory = value;
           break;
-        }
-      }
-
-      this.log('AMD define(...) of ' + ((id) ? id : 'anonymous'));
-
-      // strip any circular dependencies that exist
-      // this will prematurely create modules
-      for (i = 0, len = dependencies.length; i < len; i++) {
-        if (BUILTINS[dependencies[i]]) {
-          // was a builtin, skip
-          resolvedDependencyList.push(dependencies[i]);
-          continue;
-        }
-        // TODO: amd dependencies are resolved FIRST against their current ID
-        // then against the module Root (huge deviation from CommonJS which uses
-        // the filepaths)
-        tempModuleId = RulesEngine.resolveModule(dependencies[i], this.getId());
-        resolvedDependencyList.push(tempModuleId);
-        if (!Executor.isModuleCircular(tempModuleId) && !Executor.isModuleDefined(tempModuleId)) {
-          remainingDependencies.push(dependencies[i]);
         }
       }
 
@@ -3754,61 +2345,240 @@ var RequireContext = Fiber.extend(function () {
           throw new Error('Anonymous AMD module used, but it was not included as a dependency. This is most often caused by an anonymous define() from a script tag.');
         }
         this.log('AMD identified anonymous module as ' + id);
-      }
-
-      if (Executor.isModuleDefined(id)) {
-        this.log('AMD module ' + id + ' has already ran once');
-        return;
-      }
-      Executor.flagModuleAsDefined(id);
-
-      if (!dependenciesDeclared && typeof(executionFunctionOrLiteral) === 'function') {
-        // with Link.JS, we need to convert from a function object to
-        // a statement
-        var fnBody = ['(', executionFunctionOrLiteral.toString(), ')'].join('');
-        var analyzedRequires = Analyzer.extractRequires(fnBody);
-        dependencies.concat(analyzedRequires);
-      }
-
-      this.log('AMD define(...) of ' + id + ' depends on: ' + dependencies.join(', '));
-      this.log('AMD define(...) of ' + id + ' will retrieve: ' + remainingDependencies.join(', '));
-
-      // ask only for the missed items + a require
-      remainingDependencies.unshift('require');
-      this.require(remainingDependencies, proxy(function (require) {
-        this.log('AMD define(...) of ' + id + ' all downloads required');
-
-        // use require as our first arg
-        var module = Executor.getModule(id);
-
-        // if there is no module, it was defined inline
-        if (!module) {
-          module = Executor.createModule(id);
+      }      
+      
+      this.process(id, dependencies, function(root) {
+        // don't bobther with the artificial root we created
+        if (!root.data.resolvedId) {
+          return;
         }
-
-        var resolvedDependencies = this.getAllModules(resolvedDependencyList, require, module);
-        var results;
-
-        // if the executor is a function, run it
-        // if it is an object literal, walk it.
-        if (typeof(executionFunctionOrLiteral) === 'function') {
-          results = executionFunctionOrLiteral.apply(null, resolvedDependencies);
-          if (results) {
-            module.setExports(results);
+        // all modules have been ran, now to deal with this guy's args
+        var resolved = [];
+        var deps = (dependenciesDeclared) ? dependencies : ['require', 'exports', 'module'];
+        var require = RequireContext.createRequire(root.data.resolvedId, root.data.resolvedUrl);
+        var module = Executor.createModule(root.data.resolvedId, RequireContext.qualifiedId(root), root.data.resolvedUrl);
+        var result;
+        for (var i = 0, len = deps.length; i < len; i++) {
+          switch(deps[i]) {
+          case 'require':
+            resolved.push(require);
+            break;
+          case 'module':
+            resolved.push(module);
+            break;
+          case 'exports':
+            resolved.push(module.exports);
+            break;
+          default:
+            resolved.push(require(deps[i]));
           }
         }
-        else {
-          for (var modName in executionFunctionOrLiteral) {
-            module.exports[modName] = executionFunctionOrLiteral[modName];
+        if (typeof factory === 'function') {
+          result = factory.apply(module, resolved);
+          if (result) {
+            module.exports = result;
           }
         }
-
-      }, this));
+        else if (typeof factory === 'object') {
+          module.exports = factory;
+        }
+        module.amd = true;
+        module.exec = true;
+      });
+    },
+    
+    /**
+     * Process all the modules selected by the various CJS / AMD interfaces
+     * builds a tree to handle the dependency download and execution
+     * upon completion, calls the provided callback, returning the root node
+     * @method RequireContext#process
+     * @param {Array} dependencies - an array of dependencies to process
+     * @param {Function} callback - a function called when the module tree is downloaded and processed
+     * @private
+     */
+    process: function(id, dependencies, callback) {
+      if (typeof id !== 'string') {
+        callback = dependencies;
+        dependencies = id;
+        id = this.id;
+      }
+      
+      var root = new TreeNode();
+      var count = dependencies.length;
+      var node;
+      var runner;
+      var runners = [];
+      var resolveCount = function() {
+        if (count === 0 || --count === 0) {
+          runner = new TreeRunner(root);
+          runner.execute(function() {
+            callback(root);
+          });
+        }
+      };
+      root.data.originalId = id;
+      root.data.resolvedId = id;
+      root.data.resolvedUrl = RulesEngine.resolveFile(id, this.path);
+      
+      if (dependencies.length) {
+        for (i = 0, len = dependencies.length; i < len; i++) {
+          if (BUILTINS[dependencies[i]]) {
+            count--;
+            resolveCount();
+          }
+          else {
+            node = new TreeNode();
+            node.data.originalId = dependencies[i];
+            runner = new TreeRunner(node);
+            runners.push(runner);
+            root.addChild(node);
+            runner.download(resolveCount);
+          }
+        }
+      }
+      else {
+        resolveCount();
+      }
     }
   };
 });
 
-RequireContext = RequireContext;;/*
+/**
+ * create a require() method within a given context path
+ * relative require() calls can be based on the provided
+ * id and path
+ * @method RequireContext.createRequire
+ * @param {string} id - the module identifier for relative module IDs
+ * @param {string} path - the module path for relative path operations
+ * @public
+ * @returns a function adhearing to CommonJS and AMD require()
+ */
+RequireContext.createRequire = function (id, path, qualifiedId) {
+  var req = new RequireContext(id, path, qualifiedId);
+  var require = proxy(req.require, req);
+
+  require.ensure = proxy(req.ensure, req);
+  require.run = proxy(req.run, req);
+  // resolve an identifier to a URL (AMD compatibility)
+  require.toUrl = function (identifier) {
+    var resolvedId = RulesEngine.resolveModule(identifier, id);
+    var resolvedPath = RulesEngine.resolveFile(resolvedId, path, true);
+    return resolvedPath;
+  };
+  return require;
+};
+
+/**
+ * create a define() method within a given context path
+ * relative define() calls can be based on the provided
+ * id and path
+ * @method RequireContext.createDefine
+ * @param {string} id - the module identifier for relative module IDs
+ * @param {string} path - the module path for relative path operations
+ * @param {boolean} disableAMD - if provided, define.amd will be false, disabling AMD detection
+ * @public
+ * @returns a function adhearing to the AMD define() method
+ */
+RequireContext.createDefine = function (id, path, disableAMD) {
+  var req = new RequireContext(id, path);
+  var define = proxy(req.define, req);
+  define.amd = (disableAMD) ? false : {};
+  return define;
+};
+
+/**
+ * generate a Qualified ID
+ * A qualified ID behaves differently than a module ID. Based on it's parents,
+ * it refers to the ID as based on the chain of modules that were executed to
+ * invoke it. While this may be a reference to another module, a qualified ID is
+ * the real source of truth for where a module may be found
+ * @method RequireContext.qualifiedId
+ * @public
+ * @param {Object} rootOrId - either a {TreeNode} or {String} representing the current ID
+ * @param {String} qualifiedId - if provided, the qualfied ID is used instead of parent references
+ * @returns {String}
+ */
+RequireContext.qualifiedId = function(rootOrId, qualifiedId) {
+  var out = [];
+  
+  if (typeof rootOrId === 'string') {
+    if (qualifiedId) {
+      return [rootOrId, qualifiedId].join('(from)');
+    }
+    else {
+      return rootOrId;
+    }
+  }
+  else {
+    rootOrId.parents(function(node) {
+      if (node.data.resolvedId) {
+        out.push(node.data.resolvedId);
+      }
+    });
+    return out.join('(from)');
+  }
+};
+
+/**
+ * Creates a synchronous define() function as used inside of the Inject Sandbox
+ * Unlike a global define(), this local define already has a module context and
+ * a local require function. It is used inside of the sandbox because at
+ * execution time, it's assumed all dependencies have been resolved. This is
+ * a much lighter version of RequireContext#define
+ * @method RequireContext.createInlineDefine
+ * @public
+ * @param {Object} module - a module object from the Executor
+ * @param {Function} require - a synchronous require function
+ * @returns {Function}
+ */
+RequireContext.createInlineDefine = function(module, require) {
+  var define = function() {
+    // this is a serial define and is no longer functioning asynchronously',
+    function isArray(a) {
+      return (Object.prototype.toString.call(a) === '[object Array]');
+    }
+    var deps = [];
+    var depends = ['require', 'exports', 'module'];
+    var factory = {};
+    var result;
+    for (var i = 0, len = arguments.length; i < len; i++) {
+      if (isArray(arguments[i])) {
+        depends = arguments[i];
+        break;
+      }
+    }
+    factory = arguments[arguments.length - 1];
+    for (var d = 0, dlen = depends.length; d < dlen; d++) {
+      switch(depends[d]) {
+      case 'require':
+        deps.push(require);
+        break;
+      case 'module':
+        deps.push(module);
+        break;
+      case 'exports':
+        deps.push(module.exports);
+        break;
+      default:
+        deps.push(require(depends[d]));
+      }
+    }
+    if (typeof factory === 'function') {
+      result = factory.apply(module, deps);
+      if (result) {
+        module.exports = result;
+      }
+    }
+    else if (typeof factory === 'object') {
+      module.exports = factory;
+    }
+    module.amd = true;
+    module.exec = true;
+  };
+  define.amd = {};
+  return define;
+};
+;/*
 Inject
 Copyright 2011 LinkedIn
 
@@ -4119,9 +2889,8 @@ var RulesEngine;
        * @returns {String} the resolved identifier
        */
       resolveModule: function (moduleId, relativeTo) {
-        // if (!this.dirty.moduleRules && this.caches.moduleRules[moduleId]) {
-        //   return this.caches.moduleRules[moduleId];
-        // }
+        moduleId = moduleId || '';
+        relativeTo = relativeTo || '';
 
         this.sort('moduleRules');
         var lastId = moduleId;
@@ -4187,9 +2956,8 @@ var RulesEngine;
        * @returns {String} a resolved URL
        */
       resolveFile: function (path, relativeTo, noSuffix) {
-        // if (!this.dirty.fileRules && this.caches.fileRules[path]) {
-        //   return this.caches.fileRules[path];
-        // }
+        path = path || '';
+        relativeTo = relativeTo || '';
 
         this.sort('fileRules');
         var lastPath = path;
@@ -4484,344 +3252,294 @@ var RulesEngine;
   });
   RulesEngine = new AsStatic();
 })();
-;/*
-Inject
-Copyright 2011 LinkedIn
+;var TreeRunner = Fiber.extend(function () {
+  /**
+   * Perform a function on the next-tick, faster than setTimeout
+   * Taken from stagas / public domain
+   * By using window.postMessage, we can immediately queue a function
+   * to run on the event stack once the current JS thread has completed.
+   * For browsers that do not support postMessage, a setTimeout of 0 is
+   * used instead.
+   * @method TreeRunner.nextTick
+   * @private
+   * @param {Function} fn - the function to call on the next tick
+   */
+  var nextTick = (function () {
+    var queue = [],
+        hasPostMessage = !!window.postMessage,
+        messageName = 'inject-nexttick',
+        dirty = false,
+        trigger,
+        processQueue;
+  
+    function flushQueue () {
+      var lQueue = queue;
+      queue = [];
+      dirty = false;
+      fn = lQueue.shift();
+      while (fn) {
+        fn();
+        fn = lQueue.shift();
+      }
+    }
+  
+    function nextTick (fn) {
+      queue.push(fn);
+      if (dirty) return;
+      dirty = true;
+      trigger();
+    }
+  
+    if (hasPostMessage) {
+      trigger = function () { window.postMessage(messageName, '*'); };
+      processQueue = function (event) {
+        if (event.source === window && event.data === messageName) {
+          event.stopPropagation();
+          flushQueue();
+        }
+      };
+      nextTick.listener = window.addEventListener('message', processQueue, true);
+    }
+    else {
+      trigger = function () { window.setTimeout(function () { processQueue(); }, 0); };
+      processQueue = flushQueue;
+    }
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+    nextTick.removeListener = function () {
+      window.removeEventListener('message', processQueue, true);
+    };
 
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing,
-software distributed under the License is distributed on an "AS
-IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
-express or implied.   See the License for the specific language
-governing permissions and limitations under the License.
-*/
-
-/**
- * TreeDownloader, as its name implies, downloads a tree starting
- * at its root node. Once all nodes have been downloaded, a
- * callback can be invoked. Circular references are resolved
- * into a downloaded state and the TreeNode object is flagged
- * as downloaded.
- * @file
-**/
-var TreeDownloader = Fiber.extend(function () {
+    return nextTick;
+  }());
+  
   return {
     /**
-     * Create a TreeDownloader with a root node. From this node,
-     * it and its children can be analyzed and downloaded
-     * @constructs TreeDownloader
-     * @param {TreeNode} root - the root TreeNode to download
+     * Construct a Tree Runner Object
+     * A tree runner, given a node, is responsible for the download and execution
+     * of the root node and any children it encounters.
+     * @constructs TreeRunner
+     * @param {TreeNode} root - a Tree Node at the root of this tree
      */
-    init: function (root) {
-      this.callsRemaining = 0;
+    init: function(root) {
       this.root = root;
-      this.files = {};
     },
-
+    
     /**
-     * A logging function to help keep track of which "root" a call
-     * comes from
-     * @method TreeDownloader#log
-     * @param {variable} args - a collection of args to output
-     * @protected
-     */
-    log: function () {
-      var args = [].slice.call(arguments, 0);
-      var name = (this.root.getValue()) ? this.root.getValue().name : null;
-      debugLog('TreeDownloader (' + name + ')', args.join(' '));
-    },
-
-    /**
-     * Reduces the total number of calls remaining
-     * If the calls reach 0, the callback is invoked with the provided
-     * arguments
-     * @method TreeDownloader#reduceCallsRemaining
-     * @param {function} callback - a callback to run if 0 calls remain
-     * @param {array} args - a collection of arguments for callback
-     * @protected
-     */
-    reduceCallsRemaining: function (callback, args) {
-      this.callsRemaining--;
-      this.log('reduce. outstanding', this.callsRemaining);
-      // TODO: there is a -1 logic item here to fix
-      if (this.callsRemaining <= 0) {
-        callback.call(null, args);
-      }
-    },
-
-    /**
-     * increase the total number of calls remaining
-     * @method TreeDownloader#increaseCallsRemaining
-     * @param {int} by - an amount to increase by, defaults to 1
-     * @protected
-     */
-    increaseCallsRemaining: function (by) {
-      this.callsRemaining += by || 1;
-      this.log('increase. outstanding', this.callsRemaining);
-    },
-
-    /**
-     * get a collection of the files downloaded
-     * @method TreeDownloader#getFiles
+     * Downloads the tree, starting from this node, and spanning into its children
+     * @method TreeRunner#download
      * @public
-     * @returns {object} an object containing url/file pairs
+     * @param {Function} downloadComplete - a callback executed when the download is done
      */
-    getFiles: function () {
-      return this.files;
-    },
-
-    /**
-     * download the tree, invoking a callback on completion
-     * This recursively downloads an entire tree
-     * Consider the following tree:
-     * <pre>
-     *     root
-     *     /  \
-     *    A    B
-     *   / \   |
-     *  B   C  D
-     *  |      |
-     *  D      A
-     *  |     / \
-     * (A)  (B)  C
-     * </pre>
-     * root: no-download. Add A, Add B. Spawn A, Spawn B // count = 0 + 2 = 2 (add A, add B)<br>
-     * A: download. Add B, Add C. Spawn C (B logged) // count = 2 - 1 + 1 = 2 (remove A, add C)<br>
-     * B: download. Add D. Spawn D // count = 2 - 1 + 1 = 2 (remove B, add D)<br>
-     * C: download // count = 2 - 1 = 1 (remove C)<br>
-     * D: download // count = 1 - 1 = 0 (remove D)
-     * @method TreeDownloader#get
-     * @param {function} callback - a callback invoked on completion
-     * @public
-     */
-    get: function (callback) {
-      this.log('started download');
-      this.downloadTree(this.root, proxy(function () {
-        callback(this.root, this.getFiles());
-      }, this));
-    },
-
-    /**
-     * The recursive loop of tree downloading, spawned by the top
-     * level get() call. A callback is called at the "complete" state,
-     * when all its dependencies have also been downloaded.
-     * @method TreeDownloader#downloadTree
-     * @param {TreeNode} node - a TreeNode to download and analyze
-     * @param {function} callback - a callback to invoke when this node is "complete"
-     * @protected
-     */
-    downloadTree: function (node, callback) {
-      // Normalize Module Path. Download. Analyze.
-      var parentName =  (node.getParent() && node.getParent().getValue()) ?
-                         node.getParent().getValue().resolvedId :
-                         '';
-      var getFunction = null;
-
-      // get the path and REAL identifier for this module (resolve relative references)
-      var identifier = RulesEngine.resolveModule(node.getValue().name, parentName);
-
-      // modules are relative to identifiers, not to URLs
-      node.getValue().path = RulesEngine.resolveFile(identifier);
-
-      node.getValue().resolvedId = identifier;
-
-      // top level starts at 1
-      if (!node.getParent()) {
-        this.increaseCallsRemaining();
+    download: function(downloadComplete) {
+      var root = this.root;
+      // given original id & parent resolved id, create resolved id
+      // given resolved id & parent resolved url, create resolved url
+      // build a communicator
+      // communicator download (async)
+      // -- on complete (file)
+      // -- transform the contents (rules)
+      // -- assign file to child
+      // -- extract requires
+      // -- for each child, create children, up the children count by 1
+      // -- in a next-tick, create a new TreeDownloader at the new child (async)
+      // -- -- on complete, decrement children count by 1
+      // -- -- when children count hits 0, call downloadComplete()
+      if (root.getParent()) {
+        root.data.resolvedId = RulesEngine.resolveModule(root.data.originalId, root.getParent().data.resolvedId);
       }
-
-      // do not bother to download AMD define()-ed files
-      if (Executor.isModuleDefined(node.getValue().name)) {
-        this.log('AMD defined module, no download required', node.getValue().name);
-        this.reduceCallsRemaining(callback, node);
-        return;
+      else {
+        root.data.resolvedId = RulesEngine.resolveModule(root.data.originalId, '');
       }
-
-      var commParentName = (node.getParent()) ? node.getParent().getValue().name : '';
-      var parentUrl = (node.getParent()) ? node.getParent().getValue().path : '';
-      var fetchRules = RulesEngine.getFetchRules(identifier);
-      var communicatorFn = Communicator.noop;
+      root.data.resolvedUrl = RulesEngine.resolveFile(root.data.resolvedId);
+      
+      // select a communcator function. If there are fetch rules, create a flow control
+      // to handle communication (as opposed to the internal communicator)
+      var communicatorGet = Communicator.get;
+      var fetchRules = RulesEngine.getFetchRules(root.data.resolvedId);
       var commFlow = new Flow();
       var commFlowResolver = {
-        module: function() {
-          return RulesEngine.resolveModule.apply(RulesEngine, arguments);
-        },
-        url: function() {
-          return RulesEngine.resolveFile.apply(RulesEngine, arguments);
-        }
+        module: function() { return RulesEngine.resolveModule.apply(RulesEngine, arguments); },
+        url: function() { return RulesEngine.resolveFile.apply(RulesEngine, arguments); }
       };
       var commFlowCommunicator = {
-        get: function() {
-          return Communicator.get.apply(Communicator, arguments);
-        }
+        get: function() { return Communicator.get.apply(Communicator, arguments); }
       };
-      var addToCommFlow = function(fn) {
-        // (next, content, moduleId, resolver, options)
-        commFlow.seq(function (next, error, contents) {
+      var addComm = function(fn) {
+        commFlow.seq(function(next, error, contents) {
           fn(next, contents, commFlowResolver, commFlowCommunicator, {
-            moduleId: node.getValue().name,
-            parentId: commParentName,
-            parentUrl: parentUrl
+            moduleId: root.data.originalId,
+            parentId: (root.getParent()) ? root.getParent().data.originalId : '',
+            parentUrl: (root.getParent()) ? root.getParent().data.resolvedUrl : ''
           });
         });
       };
+      
       if (fetchRules.length > 0) {
-        // build an async flow chaining fetch calls together
-        communicatorFn = function(name, path, cb) {
+        communicatorGet = function(name, path, cb) {
           commFlow.seq(function(next) {
             next(null, '');
           });
           for (var i = 0, len = fetchRules.length; i < len; i++) {
-            addToCommFlow(fetchRules[i]);
+            addComm(fetchRules[i]);
           }
           commFlow.seq(function (next, error, contents) {
+            // If AMD is enabled, and it has a new ID, then assign that
             cb(contents);
           });
         };
       }
-      else if (node.getValue().path) {
-        communicatorFn = Communicator.get;
-      }
-
-      this.log('requesting file', node.getValue().name + ' @ ' + node.getValue().path);
-      communicatorFn(node.getValue().name, node.getValue().path, proxy(function (downloadedContent) {
-        this.log('download complete', node.getValue().path);
-
-        /*
-        IMPORTANT
-        This next section uses a flow control library, as afterDownload is the "new" style
-        pointcut. It enables cool stuff like making external requests as part of the mutation,
-        direct assignment, and more. The flow library we use is intentionally very simple.
-        Please see https://github.com/jeromeetienne/gowiththeflow.js to learn more about the
-        really small library we opted to use.
-        */
-        var pointcuts = RulesEngine.getContentRules(node.getValue().path);
-        var i, j, len, jLen, found;
-        var apFlow = new Flow();
-
-        apFlow.seq(function (next) {
-          next(null, downloadedContent);
-        });
-        var makeFlow = function (fn) {
-          apFlow.seq(function (next, error, contents) {
+      
+      // download the file via communicator, get back contents
+      communicatorGet(root.data.originalId, root.data.resolvedUrl, function(content) {
+        // build a flow control to adjust the contents based on rules
+        var pointcuts = RulesEngine.getContentRules(root.data.resolvedUrl);
+        var contentFlow = new Flow();
+        var addContent = function(fn) {
+          contentFlow.seq(function (next, error, contents) {
             fn(next, contents);
           });
         };
-        for (i = 0, len = pointcuts.length; i < len; i++) {
-          makeFlow(pointcuts[i]);
+        contentFlow.seq(function (next) {
+          next(null, content);
+        });
+        for (var i = 0, len = pointcuts.length; i < len; i++) {
+          addContent(pointcuts[i]);
         }
-
-        // once all contents are resolved, see if we have an object (a neat assignment trick)
-        // or a string. If we get an object, assign it to a special exports that says it was
-        // invoked FROM a specific location. This helps require() find the module later
-        apFlow.seq(proxy(function (next, error, contents) {
-          if (typeof(contents) !== 'string' && typeof(contents) === 'object') {
-            Executor.assignModule(parentName, identifier, node.getValue().path, contents);
-            return this.reduceCallsRemaining(callback, node);
+        contentFlow.seq(function (next, error, contents) {
+          if (typeof contents === 'string') {
+            root.data.file = contents;
           }
-          if (typeof(contents) === 'undefined') {
-            // no content was returned at all. This happens when there is explicitly nothing to eval
-            return this.reduceCallsRemaining(callback, node);
+          else {
+            root.data.exports = contents;
           }
 
-          var parent = node;
-          var found = {};
-          var value;
+          // determine if this is circular
+          var circular = false;
+          var searchIndex = {};
+          var parent = root.getParent();
+          var module;
+          var qualifiedId;
+          searchIndex[root.data.originalId] = true;
+          while(parent && !circular) {
+            if (searchIndex[parent.data.originalId]) {
+              circular = true;
+            }
+            else {
+              searchIndex[parent.data.originalId] = true;
+              parent = parent.getParent();
+            }
+          }
+          root.data.circular = circular;
 
-          // seed found with the first item
-          found[node.getValue().name] = true;
-          parent = parent.getParent();
-          // test if you are a circular reference. check every parent back to root
-          while (parent) {
-            if (!parent.getValue()) {
-              // reached root
-              break;
+          // kick off its children
+          if (root.data.exports) {
+            // when there are exports available, then we prematurely resolve this module
+            // this can happen when the an external rule for the communicator has resolved
+            // the export object for us
+            module = Executor.createModule(root.data.resolvedId, RequireContext.qualifiedId(root), root.data.resolvedUrl);
+            module.exec = true;
+            module.exports = contents;
+            downloadComplete();
+          }
+          else if (root.data.circular) {
+            // circular nodes do not need to download their children (again)
+            downloadComplete();
+          }
+          else {
+            // analyze the file for depenencies, kick off a child download for each one
+            var requires = Analyzer.extractRequires(root.data.file);
+            var children = requires.length;
+            var childDone = function() {
+              children--;
+              if (children === 0) {
+                downloadComplete();
+              }
+            };
+            
+            var childRunner = function(r) {
+              nextTick(function() {
+                r.download(childDone);
+              });
+            };
+
+            if (requires.length === 0) {
+              return downloadComplete();
             }
 
-            value = parent.getValue().name;
-            if (found[value]) {
-              this.log('circular reference found', node.getValue().name);
-              // flag the node as circular (commonJS) and the module itself (AMD)
-              node.flagCircular();
-              Executor.flagModuleAsCircular(node.getValue().name);
-            }
-            found[value] = true;
-            parent = parent.getParent();
-          }
-
-          // if it is not circular, and we have contents
-          if (!node.isCircular() && contents) {
-            // store file contents for later
-            this.files[node.getValue().name] = contents;
-
-            var results = Analyzer.extractRequires(contents);
-            var tempRequires = results;
-            var requires = [];
-            var childNode;
-            var name;
-            var path;
-            var i;
-            var callReduceCommand = proxy(function () {
-              this.reduceCallsRemaining(callback, node);
-            }, this);
-
-            // remove already-defined AMD modules before we go further
-            for (i = 0, len = tempRequires.length; i < len; i++) {
-              name = RulesEngine.resolveModule(tempRequires[i], node.getValue().resolvedId);
-              if (!Executor.isModuleDefined(name) && !Executor.isModuleDefined(tempRequires[i])) {
-                requires.push(tempRequires[i]);
+            for (var i = 0, len = requires.length; i < len; i++) {
+              var node = new TreeNode();
+              node.data.originalId = requires[i];
+              root.addChild(node);
+              
+              if (Executor.getModule(requires[i]) && Executor.getModule(requires[i]).exec) {
+                // we have it
+                childDone();
+              }
+              else {
+                // go get it
+                var runner = new TreeRunner(node);
+                childRunner(runner);
               }
             }
-
-            this.log('dependencies (' + requires.length + '):' + requires.join(', '));
-
-            // for each requires, create a child and spawn
-            if (requires.length) {
-              this.increaseCallsRemaining(requires.length);
-            }
-            for (i = 0, len = requires.length; i < len; i++) {
-              name = (results.amd) ? RulesEngine.resolveModule(requires[i], node.getValue().resolvedId): requires[i];
-              path = ''; // calculate path on recusion using parent
-              childNode = TreeDownloader.createNode(name, path);
-              node.addChild(childNode);
-              this.downloadTree(childNode, callReduceCommand);
+          }
+        });
+      });
+    },
+    
+    /**
+     * Executes a tree, starting from the root node
+     * In order to ensure a tree has all of its dependencies available
+     * a post-order traversal is used
+     * http://en.wikipedia.org/wiki/Tree_traversal#Post-order
+     * This loads Bottom-To-Top, Left-to-Right
+     * @method TreeRunner#execute
+     * @public
+     * @param {Function} executeComplete - a callback function ran when all execution is done
+     */
+    execute: function(executeComplete) {
+      var nodes = this.root.postOrder();
+      
+      var runNode = function(node) {
+        if (!node.data.resolvedId) {
+          return;
+        }
+        var module;
+        var result;
+        
+        // executor: create a module
+        // if not circular, executor: run module (otherwise, the circular reference begins as empty exports)
+        module = Executor.createModule(node.data.resolvedId, RequireContext.qualifiedId(node), node.data.resolvedUrl);
+        node.data.module = module;
+        
+        if (module.exec) {
+          return;
+        }
+        
+        if (!node.data.circular) {
+          if (node.data.exports) {
+            // exports came pre set
+            module.exports = node.data.exports;
+            module.exec = true;
+          }
+          else if (typeof node.data.file === 'string') {
+            Executor.runModule(module, node.data.file);
+            module.exec = true;
+            // if this is an AMD module, it's exports are coming from define()
+            if (!module.amd) {
+              node.data.exports = module.exports;
             }
           }
-
-          // if contents was a literal false, we had an error
-          if (contents === false) {
-            node.getValue().failed = true;
-          }
-
-          // this module is processed
-          this.reduceCallsRemaining(callback, node);
-        }, this));
-      }, this));
+        }
+      };
+      
+      for (var i = 0, len = nodes.length; i < len; i++) {
+        runNode(nodes[i]);
+      }
+      
+      executeComplete();
     }
   };
-});
-/**
- * Create a TreeNode object through a factory
- * @method TreeDownloader.createNode
- * @param {string} name - the moduleId for the tree node
- * @param {string} path - the URL for the module
- * @public
- * @returns {TreeNode} the created TreeNode object
- */
-TreeDownloader.createNode = function (name, path) {
-  var tn = new TreeNode({
-    name: name,
-    path: path,
-    failed: false
-  });
-  return tn;
-};
-;/*
+});;/*
 Inject
 Copyright 2011 LinkedIn
 
@@ -4847,46 +3565,15 @@ governing permissions and limitations under the License.
 var TreeNode = Fiber.extend(function () {
   return {
     /**
-     * Create a TreeNode with a defined value
+     * Create a TreeNode
      * @constructs TreeNode
-     * @param {TreeNode} value - the value of this node
      */
-    init: function (value) {
-      this.value = value;
+    init: function () {
+      this.data = {};
       this.children = [];
       this.left = null;
       this.right = null;
       this.parent = null;
-      this.isCircularNode = false;
-    },
-
-    /**
-     * Get the value associated with the TreeNode
-     * @method TreeNode#getValue
-     * @public
-     * @returns {variable} the value of the node
-     */
-    getValue: function () {
-      return this.value;
-    },
-
-    /**
-     * Flag this tree node as circular
-     * @method TreeNode#flagCircular
-     * @public
-     */
-    flagCircular: function () {
-      this.isCircularNode = true;
-    },
-
-    /**
-     * return if this node is a circular reference
-     * @method TreeNode#isCircular
-     * @public
-     * @returns {boolean} true if this is a circular reference
-     */
-    isCircular: function () {
-      return this.isCircularNode;
     },
 
     /**
@@ -4982,6 +3669,28 @@ var TreeNode = Fiber.extend(function () {
     getParent: function () {
       return this.parent;
     },
+    
+    /**
+     * Returns all of a requested data element for the parents
+     * @method TreeNode#parents
+     * @param {String} param - the data paramter to get
+     * @param {string} joins - the string to join it
+     * @returns {Array} - an array of the parent values
+     */
+    parents: function(callback) {
+      var output = [],
+          currentNode = this;
+      
+      while (currentNode) {
+        if (callback) {
+          callback(currentNode);
+        }
+        output.push(currentNode);
+        currentNode = currentNode.getParent();
+      }
+      
+      return output;
+    },
 
     /**
      * Perform a postOrder traversal over the tree, optionally running
@@ -5007,7 +3716,7 @@ var TreeNode = Fiber.extend(function () {
         }
 
         // node correct
-        output.push(currentNode.getValue());
+        output.push(currentNode);
         if (callback) {
           callback(currentNode);
         }
@@ -5056,6 +3765,8 @@ governing permissions and limitations under the License.
  */
 var globalRequire = new RequireContext();
 
+var errorQueue = [];
+
 /**
     This object contains the public interface for Inject.
     @class
@@ -5068,27 +3779,27 @@ context.Inject = {
       @private
    */
   INTERNAL: {
+    // expose all our classes for troubleshooting ease
+    Classes: {
+      Analyzer: Analyzer,
+      Communicator: Communicator,
+      Executor: Executor,
+      InjectCore: InjectCore,
+      RequireContext: RequireContext,
+      RulesEngine: RulesEngine,
+      TreeNode: TreeNode,
+      TreeRunner: TreeRunner
+    },
+    
     // used by the executor. these let inject know the module that is currently running
     defineExecutingModuleAs: proxy(Executor.defineExecutingModuleAs, Executor),
     undefineExecutingModule: proxy(Executor.undefineExecutingModule, Executor),
-    createModule: proxy(Executor.createModule, Executor),
-    setModuleExports: function () {},
 
     // a hash of publicly reachable module sandboxes ie exec0, exec1...
-    execute: {},
-
-    // a hash of publicly reachable module objects ie exec0's modules, exec1's modules...
-    modules: {},
-
-    // a hash of publicly reachable executor scopes ie exec0's __exe function
-    execs: {},
+    executor: {},
 
     // a globally available require() call for the window and base page
-    globalRequire: globalRequire,
-
-    // creates require and define methods as passthrough
-    createRequire: proxy(InjectCore.createRequire, InjectCore),
-    createDefine: proxy(InjectCore.createDefine, InjectCore)
+    globalRequire: globalRequire
   },
 
   plugins: {},
@@ -5115,6 +3826,28 @@ context.Inject = {
   enableDebug: function () {
     InjectCore.enableDebug.apply(this, arguments);
   },
+  
+  /**
+   * Add a listener for error events
+   * @method onError
+   * @public
+   */
+	onError: function(fn) {
+    errorQueue.push(fn);
+  },
+
+  
+  /**
+   * Emit an error to all onError handlers
+   * @method emit
+   * @public
+   */	
+  emit: function(e) {
+    for (var i = 0, len = errorQueue.length; i < len; i++) {
+      errorQueue[i].call(context, e);
+    }
+  },
+
 
   /**
     Enables AMD Plugins if that's your thing
@@ -5126,43 +3859,80 @@ context.Inject = {
     // modules matching pattern
     RulesEngine.addFetchRule(/^.+?\!.+$/, function (next, content, resolver, communicator, options) {
       var moduleName = options.moduleId;
-      var requestorName = options.parentId;
-      var requestorUrl = options.parentUrl;
+      var parentId = options.parentId;
+      var parentUrl = options.parentUrl;
 
       var pieces = moduleName.split('!');
-      var pluginId = resolver.module(pieces[0], requestorName);
-      var pluginUrl = resolver.url(pluginId, requestorUrl);
+      var pluginId = resolver.module(pieces[0], parentId);
+      var pluginUrl = resolver.url(pluginId, parentUrl);
       var identifier = pieces[1];
 
-      var rq = Inject.createRequire(moduleName, requestorUrl);
-      rq.ensure([pluginId], function (pluginRequire) {
-        // the plugin must come from the contextual require
-        // any subsequent fetching depends on the resolved plugin's location
-        var plugin = pluginRequire(pluginId);
-        var remappedRequire = Inject.createRequire(pluginId, pluginUrl);
-
-        var resolveIdentifier = function (name) {
-          return resolver.module(name, requestorName);
+      var parentRequire = RequireContext.createRequire(parentId, parentUrl);
+      
+      // when loading via a plugin, once you call load() or load.fromText(), you are DONE
+      // this special require ensures you cannot call require() after you've gotten the text
+      // we then copy all the properties over to ensure it behaves (duck typing) like the
+      // normal require
+      var loadCalled = false;
+      var pluginRequire = function() {
+        if (loadCalled) {
+          return;
+        }
+        return parentRequire.apply(parentRequire, arguments);
+      };
+      var addToPluginRequire = function(prop) {
+        pluginRequire[prop] = function() {
+          return parentRequire[prop].apply(parentRequire, arguments);
         };
-        var normalized = (plugin.normalize) ? plugin.normalize(identifier, resolveIdentifier) : resolveIdentifier(identifier);
-        var complete = function (contents) {
+      };
+      for (var prop in parentRequire) {
+        if (HAS_OWN_PROPERTY.call(parentRequire, prop)) {
+          addToPluginRequire(prop);
+        }
+      }
+      
+      // the resolver function is passed into a plugin for resolving a name relative to
+      // the current module's scope. We pass through to resolver.module which passes
+      // through to RulesEngine
+      var resolveFn = function (name) {
+        return resolver.module(name, parentId);
+      };
+      
+      // to run an AMD plugin
+      parentRequire([pluginId], function(plugin) {
+        // normalize the module ID if the plugin supports it
+        var normalized = (plugin.normalize) ? plugin.normalize(identifier, resolveFn) : resolveFn(identifier);
+        
+        // create the onload handlers that trigger the callback on completion
+        var onload = function(contents) {
+          if (loadCalled) {
+            return;
+          }
+          loadCalled = true;
+          
+          // if it is a string, then its exports are saved as a URI component
           if (typeof(contents) === 'string') {
             contents = ['module.exports = decodeURIComponent("', encodeURIComponent(contents), '");'].join('');
           }
+
           next(null, contents);
         };
-        complete.fromText = function (ftModname, body) {
-          if (!body) {
-            body = ftModname;
-            ftModname = null;
+        onload.fromText = function(moduleName, contents) {
+          if (loadCalled) {
+            return;
           }
-
-          // use the executor
-          Executor.runModule(ftModname, body, pluginUrl);
-
-          next(null, body);
+          loadCalled = true;
+          
+          if (!contents) {
+            contents = moduleName;
+            moduleName = null;
+          }
+          
+          // the contents of this are good
+          next(null, contents);
         };
-        plugin.load(normalized, remappedRequire, complete, {});
+        
+        plugin.load(normalized, pluginRequire, onload, {});
       });
     });
   },
@@ -5224,10 +3994,10 @@ context.Inject = {
    */
   disableGlobalAMD: function (disable) {
     if (disable) {
-      context.define = Inject.INTERNAL.createDefine(null, null, true);
+      context.define = RequireContext.createDefine(null, null, true);
     }
     else {
-      context.define = Inject.INTERNAL.createDefine();
+      context.define = RequireContext.createDefine();
     }
   },
 
@@ -5306,14 +4076,6 @@ context.Inject = {
     InjectCore.plugin.apply(InjectCore, args);
   },
 
-  createRequire: function() {
-    return InjectCore.createRequire.apply(InjectCore, arguments);
-  },
-
-  createDefine: function() {
-    return InjectCore.createDefine.apply(InjectCore, arguments);
-  },
-
   /**
       CommonJS and AMD require()
       @see InjectCore.createRequire
@@ -5322,7 +4084,7 @@ context.Inject = {
       @method
       @public
    */
-  require: InjectCore.createRequire(),
+  require: RequireContext.createRequire(),
   /**
       AMD define()
       @see InjectCore.createDefine
@@ -5330,7 +4092,7 @@ context.Inject = {
       @method
       @public
    */
-  define: InjectCore.createDefine(),
+  define: RequireContext.createDefine(),
   /**
       The version of Inject.
       @type {String}
@@ -5347,7 +4109,7 @@ context.Inject = {
     @method
     @public
  */
-context.require = context.Inject.INTERNAL.createRequire();
+context.require = context.Inject.require;
 
 /**
     AMD define()
@@ -5356,6 +4118,6 @@ context.require = context.Inject.INTERNAL.createRequire();
     @method
     @public
  */
-context.define = context.Inject.INTERNAL.createDefine();
-;context.Inject.version = "0.5.0";
+context.define = context.Inject.define;
+;context.Inject.version = "0.5.1";
 })(this);
